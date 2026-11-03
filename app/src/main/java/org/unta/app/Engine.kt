@@ -162,7 +162,7 @@ object Engine {
                         found = cand; break
                     } catch (e: Exception) { /* пробуем следующий */ }
                 }
-                if (found == null) return LegResult(title, p0.raw, false, "не отвечает ни по socks5, ни по http, ни по socks4", null, null, null, 0, 0, 0, 0, null)
+                if (found == null) return LegResult(title, p0?.raw, false, "не отвечает ни по socks5, ни по http, ни по socks4", null, null, null, 0, 0, 0, 0, null)
                 p = found
                 log("  протокол: ${p.scheme}")
             }

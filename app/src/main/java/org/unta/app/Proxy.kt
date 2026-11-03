@@ -43,8 +43,15 @@ data class ProxySpec(
 }
 
 object Net {
-    private val ipv4Dns = Dns { h ->
-        Dns.SYSTEM.lookup(h).filter { it is Inet4Address }.ifEmpty { throw UnknownHostException(h) }
+    private val ipv4Dns = object : Dns {
+        override fun lookup(hostname: String): List<InetAddress> =
+            Dns.SYSTEM.lookup(hostname).filter { it is Inet4Address }.ifEmpty { throw UnknownHostException(hostname) }
+    }
+
+    /** Для SOCKS: имя хоста не резолвим, отдаём заглушку 0.0.0.0 с именем, настоящее имя уйдёт на прокси. */
+    private val remoteDns = object : Dns {
+        override fun lookup(hostname: String): List<InetAddress> =
+            listOf(InetAddress.getByAddress(hostname, byteArrayOf(0, 0, 0, 0)))
     }
 
     /** Клиент напрямую (p == null) или через прокси. SOCKS (4/4a/5, с логином) реализован сами:
@@ -61,7 +68,7 @@ object Net {
             val s = p.scheme ?: "socks5h"
             if (s.startsWith("socks")) {
                 val v4 = s.startsWith("socks4")
-                b.dns { h -> listOf(InetAddress.getByAddress(h, byteArrayOf(0, 0, 0, 0))) }
+                b.dns(remoteDns)
                 b.socketFactory(SocksSocketFactory(p.host, p.port, p.user, p.pass, v4))
             } else {
                 b.proxy(Proxy(Proxy.Type.HTTP, InetSocketAddress.createUnresolved(p.host, p.port)))
