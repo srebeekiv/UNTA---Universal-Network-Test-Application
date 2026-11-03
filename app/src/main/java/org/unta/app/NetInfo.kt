@@ -58,7 +58,7 @@ object NetInfo {
             o.put("link_speed_mbps", wi.linkSpeed)
             o.put("tx_link_speed_mbps", wi.txLinkSpeedMbps)
             o.put("rx_link_speed_mbps", wi.rxLinkSpeedMbps)
-            o.put("standard", when (wi.wifiStandard) {
+            if (android.os.Build.VERSION.SDK_INT >= 30) o.put("standard", when (wi.wifiStandard) {
                 1 -> "legacy"; 4 -> "802.11n (Wi-Fi 4)"; 5 -> "802.11ac (Wi-Fi 5)"
                 6 -> "802.11ax (Wi-Fi 6)"; 7 -> "802.11be (Wi-Fi 7)"; else -> "unknown"
             })

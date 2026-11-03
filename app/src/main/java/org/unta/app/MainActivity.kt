@@ -75,7 +75,7 @@ class MainActivity : Activity() {
         val need = listOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.READ_PHONE_STATE)
             .filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
         if (need.isNotEmpty()) requestPermissions(need.toTypedArray(), 1)
-        if (!Environment.isExternalStorageManager()) log("Нет доступа ко всем файлам: результаты пойдут в папку приложения. Нажми кнопку выше.")
+        if (Build.VERSION.SDK_INT >= 30 && !Environment.isExternalStorageManager()) log("Нет доступа ко всем файлам: результаты пойдут в папку приложения. Нажми кнопку выше.")
 
         run.setOnClickListener {
             val srv = Servers.all[spin.selectedItemPosition]
