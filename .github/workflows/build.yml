@@ -1,0 +1,45 @@
+name: Build APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Build release APK
+        run: |
+          set -o pipefail
+          gradle assembleRelease -PbuildNumber=${{ github.run_number }} --no-daemon --stacktrace 2>&1 | tee build.log
+
+      - name: Publish APK to Releases
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bn=${{ github.run_number }}
+          ver="$((bn / 10)).$((bn % 10))"
+          cp app/build/outputs/apk/release/app-release.apk "UNTA-${ver}.apk"
+          {
+            echo "Версия **${ver}** (сборка ${bn})."
+            echo
+            echo "### Что нового"
+            git log -1 --format=%B | grep -v -E '^(Co-Authored-By|Claude-Session)' || true
+          } > notes.md
+          gh release create "build-${bn}" "UNTA-${ver}.apk" --title "UNTA ${ver}" --notes-file notes.md
