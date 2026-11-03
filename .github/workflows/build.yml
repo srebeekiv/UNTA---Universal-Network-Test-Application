@@ -43,3 +43,17 @@ jobs:
             git log -1 --format=%B | grep -v -E '^(Co-Authored-By|Claude-Session)' || true
           } > notes.md
           gh release create "build-${bn}" "UNTA-${ver}.apk" --title "UNTA ${ver}" --notes-file notes.md
+
+      - name: Save build log to ci-log branch
+        if: failure()
+        run: |
+          mkdir -p /tmp/cilog
+          { grep -nE "^e: |error:|FAILURE|What went wrong|Execution failed|Caused by" -A4 build.log | head -150; echo; echo ===== TAIL =====; tail -n 120 build.log; } > /tmp/cilog/build.log 2>&1 || echo "no log" > /tmp/cilog/build.log
+          git config user.name github-actions
+          git config user.email actions@users.noreply.github.com
+          git checkout -q --orphan ci-log
+          git rm -rfq . || true
+          cp /tmp/cilog/build.log build.log
+          git add build.log
+          git commit -qm "build log ${{ github.run_number }}"
+          git push -qf origin ci-log
