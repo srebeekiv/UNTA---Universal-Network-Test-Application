@@ -94,15 +94,37 @@ object Engine {
         return JSONObject().put("error", dbg.toString())
     }
 
+    /** Остановка по кнопке. */
+    val cancel = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** phase: "check" | "download" | "upload". sample: (фаза, текущая скорость Мбит/с, доля пройденного времени этапа 0..1). */
+    class Progress(val phase: (String) -> Unit, val sample: (String, Double, Double) -> Unit)
+
+    private fun monitor(ts: List<Thread>, total: AtomicLong, t0: Long, secs: Int, name: String, pr: Progress?) {
+        val hist = ArrayDeque<Pair<Long, Long>>()
+        hist.addLast(t0 to 0L)
+        while (ts.any { it.isAlive }) {
+            Thread.sleep(250)
+            val now = System.nanoTime(); val b = total.get()
+            hist.addLast(now to b)
+            while (hist.size > 2 && now - hist.first().first > 1_500_000_000L) hist.removeFirst()
+            val (ta, ba) = hist.first()
+            val dt = (now - ta) / 1e9
+            val mbps = if (dt > 0) (b - ba) * 8 / dt / 1e6 else 0.0
+            pr?.sample?.invoke(name, mbps, minOf(1.0, (now - t0) / (secs * 1e9)))
+        }
+        ts.forEach { it.join() }
+    }
+
     class Measured(val mbps: Double?, val bytes: Long, val bad: Int)
 
-    fun download(c: OkHttpClient, s: Server, threads: Int, secs: Int): Measured {
+    fun download(c: OkHttpClient, s: Server, threads: Int, secs: Int, pr: Progress? = null): Measured {
         val total = AtomicLong(); val bad = AtomicInteger()
         val t0 = System.nanoTime(); val deadline = t0 + secs * 1_000_000_000L
         val ts = (1..threads).map {
             thread {
                 val buf = ByteArray(65536)
-                while (System.nanoTime() < deadline) {
+                while (System.nanoTime() < deadline && !cancel.get()) {
                     try {
                         c.newCall(dlRequest(s, DL_CHUNK)).execute().use { r ->
                             if (!r.isSuccessful) { bad.incrementAndGet(); Thread.sleep(300); return@use }
@@ -111,7 +133,7 @@ object Engine {
                                 val n = ins.read(buf)
                                 if (n < 0) break
                                 total.addAndGet(n.toLong())
-                                if (System.nanoTime() >= deadline) break
+                                if (System.nanoTime() >= deadline || cancel.get()) break
                             }
                         }
                     } catch (e: Exception) {
@@ -120,7 +142,7 @@ object Engine {
                 }
             }
         }
-        ts.forEach { it.join() }
+        monitor(ts, total, t0, secs, "download", pr)
         val sec = (System.nanoTime() - t0) / 1e9
         val b = total.get()
         return Measured(if (b > 0) b * 8 / sec / 1e6 else null, b, bad.get())
@@ -133,7 +155,7 @@ object Engine {
             val chunk = ByteArray(65536).also { Random(7).nextBytes(it) }
             var left = size
             while (left > 0) {
-                if (System.nanoTime() >= deadline) throw IOException("deadline")
+                if (System.nanoTime() >= deadline || cancel.get()) throw IOException("deadline")
                 val n = minOf(left, chunk.size.toLong()).toInt()
                 sink.write(chunk, 0, n); sink.flush()
                 counter.addAndGet(n.toLong()); left -= n
@@ -141,13 +163,13 @@ object Engine {
         }
     }
 
-    fun upload(c: OkHttpClient, s: Server, threads: Int, secs: Int): Measured {
+    fun upload(c: OkHttpClient, s: Server, threads: Int, secs: Int, pr: Progress? = null): Measured {
         val ulUrl = s.ul ?: return Measured(null, 0, 0)
         val total = AtomicLong(); val bad = AtomicInteger()
         val t0 = System.nanoTime(); val deadline = t0 + secs * 1_000_000_000L
         val ts = (1..threads).map {
             thread {
-                while (System.nanoTime() < deadline) {
+                while (System.nanoTime() < deadline && !cancel.get()) {
                     try {
                         val gen = GenBody(UL_CHUNK, total, deadline)
                         val rb = Request.Builder().header("User-Agent", UA).url(ulUrl)
@@ -164,16 +186,16 @@ object Engine {
                 }
             }
         }
-        ts.forEach { it.join() }
+        monitor(ts, total, t0, secs, "upload", pr)
         val sec = (System.nanoTime() - t0) / 1e9
         val b = total.get()
         return Measured(if (b > 0) b * 8 / sec / 1e6 else null, b, bad.get())
     }
 
     /** Одна «нога»: напрямую (p == null) или через один прокси. */
-    fun runLeg(title: String, p0: ProxySpec?, s: Server, threads: Int, secs: Int, log: (String) -> Unit): LegResult {
+    fun runLeg(title: String, p0: ProxySpec?, s: Server, threads: Int, secs: Int, log: (String) -> Unit, pr: Progress? = null): LegResult {
         val h = arrayOfNulls<ProxySpec>(1); h[0] = p0
-        val r = legInner(title, p0, s, threads, secs, log, h)
+        val r = legInner(title, p0, s, threads, secs, log, h, pr)
         val p = h[0]
         val kind = when {
             p == null -> "direct"
@@ -185,7 +207,8 @@ object Engine {
         return r.copy(kind = kind, pname = p0?.comment ?: "", hostPort = p?.let { "${it.host}_${it.port}" } ?: "")
     }
 
-    private fun legInner(title: String, p0: ProxySpec?, s: Server, threads: Int, secs: Int, log: (String) -> Unit, holder: Array<ProxySpec?>): LegResult {
+    private fun legInner(title: String, p0: ProxySpec?, s: Server, threads: Int, secs: Int, log: (String) -> Unit, holder: Array<ProxySpec?>, pr: Progress?): LegResult {
+        pr?.phase?.invoke("check")
         var p = p0
         var client: OkHttpClient
         var ping: Long? = null
@@ -211,9 +234,10 @@ object Engine {
         }
         log("  связь есть, отклик ${ping} мс")
         val exit = exitInfo(client)
-        val dl = download(client, s, threads, secs)
+        pr?.phase?.invoke("download")
+        val dl = download(client, s, threads, secs, pr)
         log("  скачивание: " + (dl.mbps?.let { "%.2f Мбит/с".format(it) } ?: "не удалось"))
-        val ul = if (s.ul == null) null else upload(client, s, threads, secs)
+        val ul = if (s.ul == null) null else { pr?.phase?.invoke("upload"); upload(client, s, threads, secs, pr) }
         if (s.ul == null) log("  отдача: сервер не поддерживает") else log("  отдача: " + (ul?.mbps?.let { "%.2f Мбит/с".format(it) } ?: "не удалось"))
         return LegResult(title, p?.raw, true, null, ping, dl.mbps, ul?.mbps, dl.bytes, ul?.bytes ?: 0, dl.bad, ul?.bad ?: 0, exit)
     }
