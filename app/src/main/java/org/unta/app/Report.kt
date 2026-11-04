@@ -26,7 +26,7 @@ object Report {
         val j = JSONObject()
             .put("app", "UNTA").put("app_version", ver).put("time_iso", iso).put("time_epoch", whenMs / 1000)
             .put("device", Build.MODEL).put("scheduled", scheduled)
-            .put("server", JSONObject().put("code", server.code).put("label", server.label))
+            .put("server", JSONObject().put("code", server.code).put("label", legs.firstOrNull()?.server?.ifEmpty { null } ?: server.label))
             .put("threads", threads).put("seconds_per_phase", secs).put("network", info)
         val arr = JSONArray()
         for (l in legs) {
@@ -44,7 +44,7 @@ object Report {
         val t = StringBuilder()
         t.append("UNTA $ver  |  $iso").append(if (scheduled) "  |  по расписанию" else "").append('\n')
         t.append("Устройство: ${Build.MODEL}\n")
-        t.append("Сервер: ${server.label}  |  потоков: $threads  |  секунд на этап: $secs\n")
+        t.append("Сервер: ${legs.firstOrNull()?.server?.ifEmpty { null } ?: server.label}  |  потоков: $threads  |  секунд на этап: $secs\n")
         t.append("Точка: ${pointName(info)}  |  канал связи: ${info.optString("transport")}\n")
         info.optJSONArray("local_ips")?.let { t.append("Локальные IP: ${(0 until it.length()).joinToString(", ") { i -> it.getString(i) }}\n") }
         info.optJSONObject("wifi")?.let { w ->

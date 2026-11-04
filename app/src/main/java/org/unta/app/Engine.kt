@@ -37,7 +37,7 @@ data class LegResult(
     val title: String, val proxy: String?, val reachable: Boolean, val error: String?, val pingMs: Long?,
     val dlMbps: Double?, val ulMbps: Double?, val dlBytes: Long, val ulBytes: Long,
     val dlBad: Int, val ulBad: Int, val exit: JSONObject?,
-    val kind: String = "direct", val pname: String = "", val hostPort: String = ""
+    val kind: String = "direct", val pname: String = "", val hostPort: String = "", val server: String = ""
 )
 
 object Engine {
@@ -114,6 +114,56 @@ object Engine {
             pr?.sample?.invoke(name, mbps, minOf(1.0, (now - t0) / (secs * 1e9)))
         }
         ts.forEach { it.join() }
+    }
+
+    private class LibreNode(val name: String, val base: String, val dl: String, val ul: String, val ping: String)
+
+    /** Официальный список публичных серверов LibreSpeed (сам librespeed.org замеров не отдаёт). */
+    private fun libreNodes(c: OkHttpClient): List<LibreNode> {
+        val out = ArrayList<LibreNode>()
+        try {
+            val body = c.newCall(Request.Builder().header("User-Agent", UA).url("https://librespeed.org/backend-servers/servers.json").build())
+                .execute().use { r ->
+                    if (!r.isSuccessful) throw IOException("HTTP ${r.code}")
+                    r.body!!.string()
+                }
+            val a = org.json.JSONArray(body)
+            for (i in 0 until a.length()) {
+                val o = a.getJSONObject(i)
+                var base = o.optString("server")
+                if (base.isEmpty()) continue
+                if (base.startsWith("//")) base = "https:$base"
+                if (!base.endsWith("/")) base += "/"
+                out.add(LibreNode(o.optString("name", base), base, o.optString("dlURL", "garbage.php"), o.optString("ulURL", "empty.php"), o.optString("pingURL", "empty.php")))
+            }
+        } catch (e: Exception) { /* возьмём запасные */ }
+        if (out.isEmpty()) {
+            for ((n, b) in listOf("Frankfurt (raiun.de)" to "https://librespeed.raiun.de/", "New York (sbg.net.au)" to "https://nyc.speedtest.sbg.net.au/", "Amsterdam (host.speedtest.net)" to "https://ams.host.speedtest.net/"))
+                out.add(LibreNode(n, b, "garbage.php", "empty.php", "empty.php"))
+        }
+        return out
+    }
+
+    /** Выбираем самый быстрый по отклику из 8 случайных серверов списка (через тот же прокси, что и замер). */
+    fun resolveLibre(c: OkHttpClient, log: (String) -> Unit): Server {
+        val nodes = libreNodes(c)
+        val cand = (nodes.filter { it.base.startsWith("https://") }.ifEmpty { nodes }).shuffled().take(8)
+        val results = java.util.Collections.synchronizedList(ArrayList<Pair<LibreNode, Long>>())
+        val quick = c.newBuilder().connectTimeout(4, java.util.concurrent.TimeUnit.SECONDS).readTimeout(4, java.util.concurrent.TimeUnit.SECONDS).build()
+        val ts = cand.map { n ->
+            thread {
+                try {
+                    val t0 = System.nanoTime()
+                    quick.newCall(Request.Builder().header("User-Agent", UA).url(n.base + n.ping).build()).execute().use { if (!it.isSuccessful) throw IOException("HTTP ${it.code}") }
+                    results.add(n to (System.nanoTime() - t0) / 1_000_000)
+                } catch (_: Exception) {}
+            }
+        }
+        ts.forEach { it.join() }
+        val best = results.minByOrNull { it.second }?.first
+            ?: throw IOException("ни один из ${cand.size} проверенных серверов LibreSpeed не ответил")
+        log("  LibreSpeed: ${best.name} (${best.base})")
+        return Server("librespeed", "LibreSpeed: ${best.name}", "LibreSpeed", best.base + best.dl + "?ckSize={MB}", best.base + best.ul, "post-raw")
     }
 
     class Measured(val mbps: Double?, val bytes: Long, val bad: Int)
@@ -207,8 +257,9 @@ object Engine {
         return r.copy(kind = kind, pname = p0?.comment ?: "", hostPort = p?.let { "${it.host}_${it.port}" } ?: "")
     }
 
-    private fun legInner(title: String, p0: ProxySpec?, s: Server, threads: Int, secs: Int, log: (String) -> Unit, holder: Array<ProxySpec?>, pr: Progress?): LegResult {
+    private fun legInner(title: String, p0: ProxySpec?, s0: Server, threads: Int, secs: Int, log: (String) -> Unit, holder: Array<ProxySpec?>, pr: Progress?): LegResult {
         pr?.phase?.invoke("check")
+        var s = s0
         var p = p0
         var client: OkHttpClient
         var ping: Long? = null
@@ -219,7 +270,7 @@ object Engine {
                 for (sc in listOf("socks5h", "http", "socks4")) {
                     try {
                         val cand = p.withScheme(sc)
-                        ping = precheck(Net.client(cand, 10, 10), s)
+                        ping = precheck(Net.client(cand, 10, 10), if (s.code == "librespeed") Servers.all[0] else s)
                         found = cand; break
                     } catch (e: Exception) { /* пробуем следующий */ }
                 }
@@ -228,6 +279,7 @@ object Engine {
                 log("  протокол: ${p.scheme}")
             }
             client = Net.client(p)
+            if (s0.code == "librespeed") { s = resolveLibre(client, log); ping = null }
             if (ping == null) ping = precheck(Net.client(p, 10, 10), s)
         } catch (e: Exception) {
             return LegResult(title, p?.raw, false, "сервер недоступен: ${e.message ?: e.javaClass.simpleName}", null, null, null, 0, 0, 0, 0, null)
@@ -239,6 +291,6 @@ object Engine {
         log("  скачивание: " + (dl.mbps?.let { "%.2f Мбит/с".format(it) } ?: "не удалось"))
         val ul = if (s.ul == null) null else { pr?.phase?.invoke("upload"); upload(client, s, threads, secs, pr) }
         if (s.ul == null) log("  отдача: сервер не поддерживает") else log("  отдача: " + (ul?.mbps?.let { "%.2f Мбит/с".format(it) } ?: "не удалось"))
-        return LegResult(title, p?.raw, true, null, ping, dl.mbps, ul?.mbps, dl.bytes, ul?.bytes ?: 0, dl.bad, ul?.bad ?: 0, exit)
+        return LegResult(title, p?.raw, true, null, ping, dl.mbps, ul?.mbps, dl.bytes, ul?.bytes ?: 0, dl.bad, ul?.bad ?: 0, exit, server = s.label)
     }
 }
