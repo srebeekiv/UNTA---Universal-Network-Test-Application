@@ -72,9 +72,10 @@ object Report {
             t.append("   отклик: ${l.pingMs} мс\n")
             t.append("   скачивание: ${l.dlMbps?.let { "%.2f".format(it) } ?: "-"} Мбит/с (${l.dlBytes / 1_000_000} МБ, ошибок ${l.dlBad})\n")
             t.append("   отдача:     ${l.ulMbps?.let { "%.2f".format(it) } ?: "-"} Мбит/с (${l.ulBytes / 1_000_000} МБ, ошибок ${l.ulBad})\n")
-            l.exit?.let { e ->
-                t.append("   выходной IP: ${e.optString("clientIp")}  ${e.optString("city")}, ${e.optString("country")}  ${e.optString("asOrganization")}\n")
-            }
+            val e = l.exit
+            if (e != null && e.optString("clientIp").isNotEmpty())
+                t.append("   выходной IP: ${e.optString("clientIp")}  ${listOf(e.optString("city"), e.optString("country"), e.optString("asOrganization")).filter { it.isNotEmpty() }.joinToString(", ")}  (${e.optString("src")})\n")
+            else t.append("   выходной IP: не удалось определить ${e?.optString("error") ?: ""}\n")
             t.append('\n')
         }
         return j to t.toString()
@@ -91,16 +92,25 @@ object Report {
         return ctx.getExternalFilesDir(null) ?: ctx.filesDir
     }
 
-    /** measurements|scheduled / json|txt / <устройство> / ГГГГ / ММ / <дата>_<точка>_<режим>.json|txt */
-    fun save(base: File, scheduled: Boolean, whenMs: Long, point: String, mode: String, json: JSONObject, txt: String): List<File> {
-        val d = Date(whenMs)
-        val name = SimpleDateFormat("yyyy.MM.dd-HH.mm.ss", Locale.US).format(d) + "_" + clean(point) + "_" + clean(mode)
-        val y = SimpleDateFormat("yyyy", Locale.US).format(d); val m = SimpleDateFormat("MM", Locale.US).format(d)
-        val top = if (scheduled) "scheduled" else "measurements"
-        val fj = File(base, "$top/json/${device()}/$y/$m/$name.json")
-        val ft = File(base, "$top/txt/${device()}/$y/$m/$name.txt")
-        fj.parentFile!!.mkdirs(); ft.parentFile!!.mkdirs()
+    /** Имя файла: ДАТА_СЕТЬ_(direct | тип_имяПрокси)-Сервер. Сеть: имя Wi-Fi или поколение (5G/4G/3G/2G). */
+    fun fileName(whenMs: Long, info: JSONObject, leg: LegResult, s: Server): String {
+        val ts = SimpleDateFormat("yyyy.MM.dd-HH.mm.ss", Locale.US).format(Date(whenMs))
+        val net = when (info.optString("transport")) {
+            "wifi" -> info.optJSONObject("wifi")?.optString("ssid")?.takeIf { it.isNotEmpty() && !it.startsWith("<") } ?: "WiFi"
+            "mobile" -> info.optJSONObject("mobile")?.optString("generation")?.ifEmpty { null } ?: "mobile"
+            else -> info.optString("transport", "net")
+        }
+        val mid = if (leg.kind == "direct") "direct"
+        else leg.kind + "_" + clean(if (leg.pname.isNotBlank()) leg.pname else leg.hostPort)
+        return "${ts}_${clean(net)}_${mid}-${clean(s.short)}"
+    }
+
+    /** <папка>/tests/<имя>.txt и <папка>/tests/json/<имя>.json (запланированные: tests/scheduled/...) */
+    fun save(base: File, scheduled: Boolean, name: String, json: JSONObject, txt: String): List<File> {
+        val dir = File(base, if (scheduled) "tests/scheduled" else "tests")
+        val fj = File(dir, "json/$name.json"); val ft = File(dir, "$name.txt")
+        fj.parentFile!!.mkdirs()
         fj.writeText(json.toString(2)); ft.writeText(txt)
-        return listOf(fj, ft)
+        return listOf(ft, fj)
     }
 }

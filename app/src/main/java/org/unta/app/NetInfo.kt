@@ -87,7 +87,7 @@ object NetInfo {
             val tm = ctx.getSystemService(TelephonyManager::class.java)
             o.put("operator", tm.networkOperatorName)
             o.put("mcc_mnc", tm.networkOperator)
-            try { o.put("network_type", netType(tm.dataNetworkType)) } catch (_: SecurityException) {}
+            try { val nt = netType(tm.dataNetworkType); o.put("network_type", nt); o.put("generation", gen(nt)) } catch (_: SecurityException) {}
             tm.signalStrength?.cellSignalStrengths?.forEach { cs ->
                 if (cs.dbm == Int.MAX_VALUE || cs.dbm == 0) return@forEach
                 when (cs) {
@@ -104,6 +104,14 @@ object NetInfo {
             }
         } catch (e: Exception) { o.put("error", e.message ?: e.javaClass.simpleName) }
         return o
+    }
+
+    private fun gen(n: String) = when {
+        n.contains("5G") -> "5G"
+        n.contains("LTE") -> "4G"
+        n.contains("HS") || n.contains("UMTS") -> "3G"
+        n.contains("EDGE") || n.contains("GPRS") || n.contains("GSM") -> "2G"
+        else -> "mobile"
     }
 
     private fun netType(t: Int) = when (t) {
