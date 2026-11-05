@@ -1,5 +1,7 @@
 package org.unta.app
 
+import okhttp3.Call
+import okhttp3.EventListener
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
@@ -37,7 +39,7 @@ data class LegResult(
     val title: String, val proxy: String?, val reachable: Boolean, val error: String?, val pingMs: Long?,
     val dlMbps: Double?, val ulMbps: Double?, val dlBytes: Long, val ulBytes: Long,
     val dlBad: Int, val ulBad: Int, val exit: JSONObject?,
-    val kind: String = "direct", val pname: String = "", val hostPort: String = "", val server: String = ""
+    val kind: String = "direct", val pname: String = "", val hostPort: String = "", val server: String = "", val latency: JSONObject? = null
 )
 
 object Engine {
@@ -100,20 +102,38 @@ object Engine {
     /** phase: "check" | "download" | "upload". sample: (фаза, текущая скорость Мбит/с, доля пройденного времени этапа 0..1). */
     class Progress(val phase: (String) -> Unit, val sample: (String, Double, Double) -> Unit)
 
-    private fun monitor(ts: List<Thread>, total: AtomicLong, t0: Long, secs: Int, name: String, pr: Progress?) {
+    /** Раз в 250 мс считает скорость по окну 2 с и сглаживает её (EMA) для графика.
+     *  Возвращает [байт к моменту окончания разгона, наносекунд от старта до этого момента]. */
+    private fun monitor(ts: List<Thread>, total: AtomicLong, t0: Long, secs: Int, name: String, pr: Progress?): LongArray {
         val hist = ArrayDeque<Pair<Long, Long>>()
         hist.addLast(t0 to 0L)
+        val skipAt = minOf(2.0, secs * 0.2)
+        val sk = LongArray(2)
+        var ema = -1.0
         while (ts.any { it.isAlive }) {
             Thread.sleep(250)
             val now = System.nanoTime(); val b = total.get()
             hist.addLast(now to b)
-            while (hist.size > 2 && now - hist.first().first > 1_500_000_000L) hist.removeFirst()
+            while (hist.size > 2 && now - hist.first().first > 2_000_000_000L) hist.removeFirst()
             val (ta, ba) = hist.first()
             val dt = (now - ta) / 1e9
-            val mbps = if (dt > 0) (b - ba) * 8 / dt / 1e6 else 0.0
-            pr?.sample?.invoke(name, mbps, minOf(1.0, (now - t0) / (secs * 1e9)))
+            val raw = if (dt > 0) (b - ba) * 8 / dt / 1e6 else 0.0
+            ema = if (ema < 0) raw else ema * 0.6 + raw * 0.4
+            if (sk[1] == 0L && (now - t0) / 1e9 >= skipAt) { sk[0] = b; sk[1] = now - t0 }
+            pr?.sample?.invoke(name, ema, minOf(1.0, (now - t0) / (secs * 1e9)))
         }
         ts.forEach { it.join() }
+        return sk
+    }
+
+    /** Итоговая скорость без разгона TCP (первые ~20% времени, но не больше 2 с). */
+    private fun finish(total: AtomicLong, t0: Long, secs: Int, sk: LongArray, bad: Int): Measured {
+        val sec = minOf((System.nanoTime() - t0) / 1e9, secs.toDouble())
+        val b = total.get()
+        if (b <= 0 || sec <= 0) return Measured(null, b, bad)
+        val skipSec = sk[1] / 1e9
+        val mbps = if (sk[1] > 0 && sec - skipSec >= 1.0) (b - sk[0]) * 8 / (sec - skipSec) / 1e6 else b * 8 / sec / 1e6
+        return Measured(mbps, b, bad)
     }
 
     private class LibreNode(val name: String, val base: String, val dl: String, val ul: String, val ping: String)
@@ -166,13 +186,45 @@ object Engine {
         return Server("librespeed", "LibreSpeed: ${best.name}", "LibreSpeed", best.base + best.dl + "?ckSize={MB}", best.base + best.ul, "post-raw")
     }
 
+    private class Timing : EventListener() {
+        var dns = -1L; var connect = -1L; var tls = -1L
+        val waits = ArrayList<Long>()
+        private var dnsS = 0L; private var conS = 0L; private var tlsS = 0L; private var reqEnd = 0L
+        private fun since(t: Long) = (System.nanoTime() - t) / 1_000_000
+        override fun dnsStart(call: Call, domainName: String) { dnsS = System.nanoTime() }
+        override fun dnsEnd(call: Call, domainName: String, inetAddressList: List<java.net.InetAddress>) { if (dns < 0) dns = since(dnsS) }
+        override fun connectStart(call: Call, inetSocketAddress: java.net.InetSocketAddress, proxy: java.net.Proxy) { conS = System.nanoTime() }
+        override fun secureConnectStart(call: Call) { tlsS = System.nanoTime() }
+        override fun secureConnectEnd(call: Call, handshake: okhttp3.Handshake?) { if (tls < 0) tls = since(tlsS) }
+        override fun connectEnd(call: Call, inetSocketAddress: java.net.InetSocketAddress, proxy: java.net.Proxy, protocol: okhttp3.Protocol?) {
+            if (connect < 0) connect = since(conS) - maxOf(tls, 0L)
+        }
+        override fun requestHeadersEnd(call: Call, request: Request) { reqEnd = System.nanoTime() }
+        override fun responseHeadersStart(call: Call) { waits.add(since(reqEnd)) }
+    }
+
+    /** DNS / TCP (у прокси вместе с рукопожатием SOCKS/CONNECT) / TLS по первому запросу и отклик HTTP: лучшее из 4 запросов. */
+    fun latency(c: OkHttpClient, s: Server): JSONObject? = try {
+        val t = Timing()
+        val c2 = c.newBuilder().eventListener(t).build()
+        repeat(4) {
+            c2.newCall(dlRequest(s, 1000)).execute().use { r ->
+                if (!r.isSuccessful) throw IOException("HTTP ${r.code}")
+                r.body!!.byteStream().read(ByteArray(1024))
+            }
+        }
+        JSONObject().put("dns_ms", t.dns).put("connect_ms", t.connect).put("tls_ms", t.tls)
+            .put("first_ms", t.waits.firstOrNull() ?: -1).put("rtt_ms", t.waits.minOrNull() ?: -1)
+    } catch (e: Exception) { null }
+
     class Measured(val mbps: Double?, val bytes: Long, val bad: Int)
 
     fun download(c: OkHttpClient, s: Server, threads: Int, secs: Int, pr: Progress? = null): Measured {
         val total = AtomicLong(); val bad = AtomicInteger()
         val t0 = System.nanoTime(); val deadline = t0 + secs * 1_000_000_000L
-        val ts = (1..threads).map {
+        val ts = (1..threads).map { idx ->
             thread {
+                Thread.sleep(150L * (idx - 1))
                 val buf = ByteArray(65536)
                 while (System.nanoTime() < deadline && !cancel.get()) {
                     try {
@@ -192,10 +244,8 @@ object Engine {
                 }
             }
         }
-        monitor(ts, total, t0, secs, "download", pr)
-        val sec = (System.nanoTime() - t0) / 1e9
-        val b = total.get()
-        return Measured(if (b > 0) b * 8 / sec / 1e6 else null, b, bad.get())
+        val sk = monitor(ts, total, t0, secs, "download", pr)
+        return finish(total, t0, secs, sk, bad.get())
     }
 
     private class GenBody(val size: Long, val counter: AtomicLong, val deadline: Long) : RequestBody() {
@@ -217,11 +267,12 @@ object Engine {
         val ulUrl = s.ul ?: return Measured(null, 0, 0)
         val total = AtomicLong(); val bad = AtomicInteger()
         val t0 = System.nanoTime(); val deadline = t0 + secs * 1_000_000_000L
-        val ts = (1..threads).map {
+        val ts = (1..threads).map { idx ->
             thread {
+                Thread.sleep(150L * (idx - 1))
                 while (System.nanoTime() < deadline && !cancel.get()) {
                     try {
-                        val gen = GenBody(UL_CHUNK, total, deadline)
+                        val gen = GenBody(UL_CHUNK / 2 + (idx - 1) * 1_500_000L, total, deadline)
                         val rb = Request.Builder().header("User-Agent", UA).url(ulUrl)
                         when (s.mode) {
                             "put" -> rb.put(gen)
@@ -236,10 +287,8 @@ object Engine {
                 }
             }
         }
-        monitor(ts, total, t0, secs, "upload", pr)
-        val sec = (System.nanoTime() - t0) / 1e9
-        val b = total.get()
-        return Measured(if (b > 0) b * 8 / sec / 1e6 else null, b, bad.get())
+        val sk = monitor(ts, total, t0, secs, "upload", pr)
+        return finish(total, t0, secs, sk, bad.get())
     }
 
     /** Одна «нога»: напрямую (p == null) или через один прокси. */
@@ -284,13 +333,17 @@ object Engine {
         } catch (e: Exception) {
             return LegResult(title, p?.raw, false, "сервер недоступен: ${e.message ?: e.javaClass.simpleName}", null, null, null, 0, 0, 0, 0, null)
         }
-        log("  связь есть, отклик ${ping} мс")
+        val lat = latency(client, s)
+        val rtt = lat?.optLong("rtt_ms", -1) ?: -1L
+        if (rtt >= 0) ping = rtt
+        if (lat != null) log("  связь есть: DNS ${lat.optLong("dns_ms")}, TCP ${lat.optLong("connect_ms")}, TLS ${lat.optLong("tls_ms")} мс; отклик HTTP $ping мс")
+        else log("  связь есть, отклик ${ping} мс")
         val exit = exitInfo(client)
         pr?.phase?.invoke("download")
         val dl = download(client, s, threads, secs, pr)
         log("  скачивание: " + (dl.mbps?.let { "%.2f Мбит/с".format(it) } ?: "не удалось"))
         val ul = if (s.ul == null) null else { pr?.phase?.invoke("upload"); upload(client, s, threads, secs, pr) }
         if (s.ul == null) log("  отдача: сервер не поддерживает") else log("  отдача: " + (ul?.mbps?.let { "%.2f Мбит/с".format(it) } ?: "не удалось"))
-        return LegResult(title, p?.raw, true, null, ping, dl.mbps, ul?.mbps, dl.bytes, ul?.bytes ?: 0, dl.bad, ul?.bad ?: 0, exit, server = s.label)
+        return LegResult(title, p?.raw, true, null, ping, dl.mbps, ul?.mbps, dl.bytes, ul?.bytes ?: 0, dl.bad, ul?.bad ?: 0, exit, server = s.label, latency = lat)
     }
 }

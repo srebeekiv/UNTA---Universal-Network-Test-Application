@@ -37,6 +37,7 @@ object Report {
                 .put("download_bytes", l.dlBytes).put("upload_bytes", l.ulBytes)
                 .put("download_errors", l.dlBad).put("upload_errors", l.ulBad)
             l.exit?.let { o.put("exit", it) }
+            l.latency?.let { o.put("latency", it) }
             arr.put(o)
         }
         j.put("legs", arr)
@@ -69,7 +70,9 @@ object Report {
         for (l in legs) {
             t.append("== ${l.title}\n")
             if (!l.reachable) { t.append("   НЕ УДАЛОСЬ: ${l.error}\n\n"); continue }
-            t.append("   отклик: ${l.pingMs} мс\n")
+            t.append("   отклик HTTP: ${l.pingMs} мс")
+            l.latency?.let { t.append("  (DNS ${it.optLong("dns_ms")}, TCP ${it.optLong("connect_ms")}, TLS ${it.optLong("tls_ms")}, первый запрос ${it.optLong("first_ms")} мс)") }
+            t.append("\n")
             t.append("   скачивание: ${l.dlMbps?.let { "%.2f".format(it) } ?: "-"} Мбит/с (${l.dlBytes / 1_000_000} МБ, ошибок ${l.dlBad})\n")
             t.append("   отдача:     ${l.ulMbps?.let { "%.2f".format(it) } ?: "-"} Мбит/с (${l.ulBytes / 1_000_000} МБ, ошибок ${l.ulBad})\n")
             val e = l.exit
