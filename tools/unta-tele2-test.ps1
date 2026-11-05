@@ -1,4 +1,4 @@
-# UNTA: проверка узлов Tele2 с компьютера Windows 10: порты 80/443, http и https, напрямую и через прокси.
+﻿# UNTA: проверка узлов Tele2 с компьютера Windows 10: порты 80/443, http и https, напрямую и через прокси.
 # Запуск (PowerShell):
 #   powershell -ExecutionPolicy Bypass -File .\unta-tele2-test.ps1
 #   powershell -ExecutionPolicy Bypass -File .\unta-tele2-test.ps1 -Proxy socks5h://127.0.0.1:2080 -Sec 8
@@ -55,7 +55,7 @@ foreach ($h in $hosts) {
     Say ("  TCP 80:  " + (Test-Tcp $h 80))
     Say ("  TCP 443: " + (Test-Tcp $h 443))
     foreach ($scheme in "http", "https") {
-        $url = "$scheme`://$h/1GB.zip"
+        $url = "${scheme}://${h}/1GB.zip"
         Say ("  {0,-5} напрямую : {1}" -f $scheme, (Run-Curl $url @()))
         if ($Proxy) { Say ("  {0,-5} прокси   : {1}" -f $scheme, (Run-Curl $url @("-x", $Proxy))) }
     }
