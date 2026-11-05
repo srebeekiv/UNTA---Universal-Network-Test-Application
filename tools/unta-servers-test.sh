@@ -7,6 +7,7 @@
 #   sh unta-servers-test.sh -u                   ещё и проверка отдачи (шлёт 3 МБ на серверы с upload)
 #   sh unta-servers-test.sh -p socks5h://127.0.0.1:9080     всё через прокси (curl -x)
 #   sh unta-servers-test.sh -o cf,tele2          только указанные коды серверов
+#   sh unta-servers-test.sh -s                   те же серверы, но http:// заменён на https:// (порт 443 вместо 80)
 #   sh unta-servers-test.sh -6                   проверять ещё и IPv6 (по умолчанию только IPv4)
 #   sh unta-servers-test.sh -d 94.140.14.14      DNS для curl (по умолчанию берётся из системы)
 #
@@ -16,16 +17,17 @@
 # (если туда писать нельзя, то в $TMPDIR или /tmp)
 # Сертификаты не проверяются (-k): у curl в консоли телефона часто нет бандла CA.
 
-PX=""; T=6; UP=0; ONLY=""; DNS=""; V6=0
+PX=""; T=6; UP=0; ONLY=""; DNS=""; V6=0; TLS=0
 while [ $# -gt 0 ]; do
     case "$1" in
         -p) PX="-x $2"; shift ;;
         -t) T="$2"; shift ;;
         -u) UP=1 ;;
         -6) V6=1 ;;
+        -s) TLS=1 ;;
         -o) ONLY="$2"; shift ;;
         -d) DNS="$2"; shift ;;
-        -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
         *) echo "неизвестный параметр: $1"; exit 1 ;;
     esac
     shift
@@ -91,6 +93,7 @@ rcname() {
 
 test_dl() { # $1 = -4|-6|"" ; $2 = URL
     fam="$1"; url="$2"; rng=""
+    [ "$TLS" = 1 ] && url=$(echo "$url" | sed 's#^http://#https://#')
     case "$url" in
         *'{BYTES}'*) u=$(echo "$url" | sed 's/{BYTES}/30000000/') ;;
         *'{MB}'*) u=$(echo "$url" | sed 's/{MB}/30/') ;;
@@ -119,6 +122,7 @@ test_dl() { # $1 = -4|-6|"" ; $2 = URL
 }
 
 test_ul() { # $1 = URL  $2 = режим
+    [ "$TLS" = 1 ] && set -- "$(echo "$1" | sed 's#^http://#https://#')" "$2"
     [ -s "$UPF" ] || head -c 3000000 /dev/urandom > "$UPF"
     case "$2" in
         put) set -- "$1" -T "$UPF" ;;
