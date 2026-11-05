@@ -7,25 +7,37 @@
 #   sh unta-servers-test.sh -u                   ещё и проверка отдачи (шлёт 3 МБ на серверы с upload)
 #   sh unta-servers-test.sh -p socks5h://127.0.0.1:9080     всё через прокси (curl -x)
 #   sh unta-servers-test.sh -o cf,tele2          только указанные коды серверов
+#   sh unta-servers-test.sh -d 94.140.14.14      DNS для curl (по умолчанию берётся из системы)
+#
+# curl в консоли Android собран с c-ares и сам системный DNS не видит, поэтому DNS передаётся явно.
 #
 # Результат печатается на экран и сохраняется в /data/local/tmp/unta_servers_<дата>.txt
 # (если туда писать нельзя, то в $TMPDIR или /tmp)
 # Сертификаты не проверяются (-k): у curl в консоли телефона часто нет бандла CA.
 
-PX=""; T=6; UP=0; ONLY=""
+PX=""; T=6; UP=0; ONLY=""; DNS=""
 while [ $# -gt 0 ]; do
     case "$1" in
         -p) PX="-x $2"; shift ;;
         -t) T="$2"; shift ;;
         -u) UP=1 ;;
         -o) ONLY="$2"; shift ;;
-        -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
+        -d) DNS="$2"; shift ;;
+        -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
         *) echo "неизвестный параметр: $1"; exit 1 ;;
     esac
     shift
 done
 
 command -v curl >/dev/null 2>&1 || { echo "curl не найден"; exit 1; }
+if [ -z "$DNS" ]; then
+    DNS=$(dumpsys connectivity 2>/dev/null | grep -m1 -o 'DnsAddresses: \[[^]]*\]' | grep -o '[0-9]\{1,3\}\(\.[0-9]\{1,3\}\)\{3\}' | head -3 | tr '\n' ',' | sed 's/,$//')
+    DNSSRC="взяты из системы (dumpsys connectivity)"
+    if [ -z "$DNS" ]; then DNS="1.1.1.1,8.8.8.8"; DNSSRC="определить не удалось, взяты 1.1.1.1 и 8.8.8.8 (результат может отличаться от DNS вашей сети; задайте свой через -d)"; fi
+else
+    DNSSRC="заданы вручную"
+fi
+DNSARG="--dns-servers $DNS"
 UA="Mozilla/5.0 (Linux; Android) UNTA-test"
 D=/data/local/tmp; [ -d "$D" ] && [ -w "$D" ] || D="${TMPDIR:-/tmp}"
 OUT="$D/unta_servers_$(date +%Y.%m.%d-%H.%M.%S).txt"
@@ -79,7 +91,7 @@ test_dl() { # $1 = -4|-6|"" ; $2 = URL
         *'{MB}'*) u=$(echo "$url" | sed 's/{MB}/30/') ;;
         *) u="$url"; rng="-r 0-29999999" ;;
     esac
-    res=$(curl -sS -k $fam $PX -A "$UA" --connect-timeout 8 -m "$T" $rng -o /dev/null \
+    res=$(curl -sS -k $fam $PX $DNSARG -A "$UA" --connect-timeout 8 -m "$T" $rng -o /dev/null \
         -w '%{http_code} %{remote_ip} %{time_namelookup} %{time_connect} %{time_appconnect} %{time_starttransfer} %{size_download} %{speed_download}' \
         "$u" 2>"$ERR" </dev/null)
     rc=$?
@@ -103,7 +115,7 @@ test_ul() { # $1 = URL  $2 = режим
         *) set -- "$1" --data-binary "@$UPF" -H 'Content-Type: application/octet-stream' ;;
     esac
     u="$1"; shift
-    res=$(curl -sS -k $PX -A "$UA" --connect-timeout 8 -m 20 -o /dev/null \
+    res=$(curl -sS -k $PX $DNSARG -A "$UA" --connect-timeout 8 -m 20 -o /dev/null \
         -w '%{http_code} %{size_upload} %{speed_upload}' "$@" "$u" 2>"$ERR" </dev/null)
     rc=$?
     set -- $res
@@ -117,6 +129,7 @@ test_ul() { # $1 = URL  $2 = режим
 run_all() {
 echo "UNTA: проверка серверов  $(date '+%Y-%m-%d %H:%M:%S')  время теста ${T} с${PX:+  прокси: ${PX#-x }}"
 echo "curl: $(curl -V | head -1)"
+echo "DNS для curl: $DNS ($DNSSRC)"
 echo
 
 echo "$LIST" | while IFS='|' read -r code name dl ul mode; do
@@ -132,7 +145,7 @@ done
 
 echo
 echo "== LibreSpeed: официальный список серверов"
-curl -sS -k $PX -A "$UA" --connect-timeout 8 -m 15 -o $D/librespeed_servers.json \
+curl -sS -k $PX $DNSARG -A "$UA" --connect-timeout 8 -m 15 -o $D/librespeed_servers.json \
     -w '  HTTP %{http_code}, %{size_download} байт\n' "https://librespeed.org/backend-servers/servers.json" 2>"$ERR" </dev/null \
     || echo "  FAIL: $(errtxt)"
 if [ -s $D/librespeed_servers.json ]; then
@@ -144,7 +157,7 @@ echo
 echo "== Определение внешнего IP"
 for u in "https://speed.cloudflare.com/meta" "https://speed.cloudflare.com/cdn-cgi/trace" "https://ipinfo.io/json" "http://ip-api.com/json"; do
     echo "  $u"
-    curl -sS -k -4 $PX -A "$UA" --connect-timeout 8 -m 10 "$u" 2>"$ERR" </dev/null | head -c 300 | sed 's/^/    /'
+    curl -sS -k -4 $PX $DNSARG -A "$UA" --connect-timeout 8 -m 10 "$u" 2>"$ERR" </dev/null | head -c 300 | sed 's/^/    /'
     [ -s "$ERR" ] && echo "    ошибка: $(errtxt)"
     echo
 done
