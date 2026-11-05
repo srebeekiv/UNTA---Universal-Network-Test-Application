@@ -7,6 +7,7 @@
 #   sh unta-servers-test.sh -u                   ещё и проверка отдачи (шлёт 3 МБ на серверы с upload)
 #   sh unta-servers-test.sh -p socks5h://127.0.0.1:9080     всё через прокси (curl -x)
 #   sh unta-servers-test.sh -o cf,tele2          только указанные коды серверов
+#   sh unta-servers-test.sh -6                   проверять ещё и IPv6 (по умолчанию только IPv4)
 #   sh unta-servers-test.sh -d 94.140.14.14      DNS для curl (по умолчанию берётся из системы)
 #
 # curl в консоли Android собран с c-ares и сам системный DNS не видит, поэтому DNS передаётся явно.
@@ -15,15 +16,16 @@
 # (если туда писать нельзя, то в $TMPDIR или /tmp)
 # Сертификаты не проверяются (-k): у curl в консоли телефона часто нет бандла CA.
 
-PX=""; T=6; UP=0; ONLY=""; DNS=""
+PX=""; T=6; UP=0; ONLY=""; DNS=""; V6=0
 while [ $# -gt 0 ]; do
     case "$1" in
         -p) PX="-x $2"; shift ;;
         -t) T="$2"; shift ;;
         -u) UP=1 ;;
+        -6) V6=1 ;;
         -o) ONLY="$2"; shift ;;
         -d) DNS="$2"; shift ;;
-        -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
         *) echo "неизвестный параметр: $1"; exit 1 ;;
     esac
     shift
@@ -31,7 +33,10 @@ done
 
 command -v curl >/dev/null 2>&1 || { echo "curl не найден"; exit 1; }
 if [ -z "$DNS" ]; then
-    DNS=$(dumpsys connectivity 2>/dev/null | grep -m1 -o 'DnsAddresses: \[[^]]*\]' | grep -o '[0-9]\{1,3\}\(\.[0-9]\{1,3\}\)\{3\}' | head -3 | tr '\n' ',' | sed 's/,$//')
+    DNS=""
+    for ip in $(dumpsys connectivity 2>/dev/null | grep -m1 -o 'DnsAddresses: \[[^]]*\]' | grep -o '[0-9]\{1,3\}\(\.[0-9]\{1,3\}\)\{3\}'); do
+        case ",$DNS," in *",$ip,"*) ;; *) DNS="${DNS:+$DNS,}$ip" ;; esac
+    done
     DNSSRC="взяты из системы (dumpsys connectivity)"
     if [ -z "$DNS" ]; then DNS="1.1.1.1,8.8.8.8"; DNSSRC="определить не удалось, взяты 1.1.1.1 и 8.8.8.8 (результат может отличаться от DNS вашей сети; задайте свой через -d)"; fi
 else
@@ -98,8 +103,9 @@ test_dl() { # $1 = -4|-6|"" ; $2 = URL
     set -- $res
     code="${1:-000}"; ip="${2:--}"; dns=$(ms "${3:-0}"); con=$(ms "${4:-0}"); tls=$(ms "${5:-0}"); ttfb=$(ms "${6:-0}"); size="${7:-0}"; spd="${8:-0}"
     if { [ "$rc" = 0 ] || { [ "$rc" = 28 ] && [ "$size" != 0 ]; }; } && { [ "$code" = 200 ] || [ "$code" = 206 ]; }; then
+        tcpd=$((con - dns)); [ "$tcpd" -lt 0 ] && tcpd=0
         tlsd=0; [ "$tls" -gt 0 ] && tlsd=$((tls - con))
-        printf '  OK    %s  dns %s мс, tcp %s, tls %s, 1-й байт %s мс, скачано %s КБ, %s Мбит/с  [%s]\n' "$lbl" "$dns" "$con" "$tlsd" "$ttfb" "$((size / 1000))" "$(mbit "$spd")" "$ip"
+        printf '  OK    %s  dns %s мс, tcp %s, tls %s, 1-й байт %s мс, скачано %s КБ, %s Мбит/с  [%s]\n' "$lbl" "$dns" "$tcpd" "$tlsd" "$ttfb" "$((size / 1000))" "$(mbit "$spd")" "$ip"
     elif [ "$rc" = 0 ]; then
         printf '  FAIL  %s  HTTP %s (сервер ответил, но не файлом)  [%s]\n' "$lbl" "$code" "$ip"
     else
@@ -135,7 +141,7 @@ echo
 echo "$LIST" | while IFS='|' read -r code name dl ul mode; do
     [ -n "$ONLY" ] && case ",$ONLY," in *",$code,"*) ;; *) continue ;; esac
     echo "== $code  ($name)"
-    if [ -n "$PX" ]; then fams=" "; else fams="-4 -6"; fi
+    if [ -n "$PX" ]; then fams=" "; elif [ "$V6" = 1 ]; then fams="-4 -6"; else fams="-4"; fi
     for f in $fams; do
         case "$f" in -4) lbl="IPv4" ;; -6) lbl="IPv6" ;; *) lbl="via-proxy" ;; esac
         test_dl "$f" "$dl"
@@ -155,7 +161,7 @@ fi
 
 echo
 echo "== Определение внешнего IP"
-for u in "https://speed.cloudflare.com/meta" "https://speed.cloudflare.com/cdn-cgi/trace" "https://ipinfo.io/json" "http://ip-api.com/json"; do
+for u in "https://ipinfo.io/json" "http://ip-api.com/json" "https://speed.cloudflare.com/cdn-cgi/trace"; do
     echo "  $u"
     curl -sS -k -4 $PX $DNSARG -A "$UA" --connect-timeout 8 -m 10 "$u" 2>"$ERR" </dev/null | head -c 300 | sed 's/^/    /'
     [ -s "$ERR" ] && echo "    ошибка: $(errtxt)"

@@ -20,17 +20,32 @@ import kotlin.concurrent.thread
 data class Server(val code: String, val label: String, val short: String, val dl: String, val ul: String?, val mode: String)
 
 object Servers {
+    private fun t2(code: String, label: String, short: String, host: String) =
+        Server(code, label, short, "http://$host/1GB.zip", "http://$host/upload.php", "put")
+    private fun dlOnly(code: String, label: String, short: String, url: String) =
+        Server(code, "$label (только скачивание)", short, url, null, "")
+
+    // Порядок: сначала проверенные рабочие. Tele2-DE и Tele2-SE-Stockholm убраны: их имена не существуют в DNS.
     val all = listOf(
         Server("cf", "Cloudflare-Anycast", "Cloudflare", "https://speed.cloudflare.com/__down?bytes={BYTES}", "https://speed.cloudflare.com/__up", "multipart"),
-        Server("tele2", "Tele2-Anycast-Europe", "Tele2", "http://speedtest.tele2.net/1GB.zip", "http://speedtest.tele2.net/upload.php", "put"),
-        Server("librespeed", "LibreSpeed-Official", "LibreSpeed", "https://librespeed.org/backend/garbage.php?ckSize={MB}", "https://librespeed.org/backend/empty.php", "post-raw"),
-        Server("tele2-de", "DE Frankfurt-Tele2", "Tele2-DE", "http://fra36-speedtest-1.tele2.net/1GB.zip", "http://fra36-speedtest-1.tele2.net/upload.php", "put"),
-        Server("tele2-nl", "NL Amsterdam-Tele2", "Tele2-NL", "http://ams-speedtest-1.tele2.net/1GB.zip", "http://ams-speedtest-1.tele2.net/upload.php", "put"),
-        Server("tele2-se", "SE Stockholm-Tele2", "Tele2-SE", "http://hgd-speedtest-1.tele2.net/1GB.zip", "http://hgd-speedtest-1.tele2.net/upload.php", "put"),
-        Server("tele2-lt", "LT Vilnius-Tele2", "Tele2-LT", "http://vln038-speedtest-2.tele2.net/1GB.zip", "http://vln038-speedtest-2.tele2.net/upload.php", "put"),
-        Server("de-hetzner", "DE Falkenstein-Hetzner (только скачивание)", "Hetzner-DE", "https://fsn1-speed.hetzner.com/100MB.bin", null, ""),
-        Server("fi-hetzner", "FI Helsinki-Hetzner (только скачивание)", "Hetzner-FI", "https://hel1-speed.hetzner.com/100MB.bin", null, ""),
-        Server("fr-gra", "FR Gravelines-OVH (только скачивание)", "OVH-FR", "https://lil2-gra.speedtest.network.ovh.net/files/1Gb.dat", null, ""),
+        Server("librespeed", "LibreSpeed (авто-выбор сервера)", "LibreSpeed", "https://librespeed.org/backend/garbage.php?ckSize={MB}", "https://librespeed.org/backend/empty.php", "post-raw"),
+        t2("tele2-lt", "LT Vilnius-Tele2", "Tele2-LT", "vln038-speedtest-2.tele2.net"),
+        t2("tele2", "Tele2-Anycast-Europe", "Tele2", "speedtest.tele2.net"),
+        t2("tele2-hr", "HR Zagreb-Tele2", "Tele2-HR", "zgb-speedtest-1.tele2.net"),
+        t2("tele2-lv", "LV Riga-Tele2", "Tele2-LV", "bks4-speedtest-1.tele2.net"),
+        t2("tele2-nl", "NL Amsterdam-Tele2", "Tele2-NL", "ams-speedtest-1.tele2.net"),
+        t2("tele2-se-got", "SE Gothenburg-Tele2", "Tele2-SE-Got", "bck-speedtest-1.tele2.net"),
+        dlOnly("de-hetzner", "DE Falkenstein-Hetzner", "Hetzner-DE", "https://fsn1-speed.hetzner.com/100MB.bin"),
+        dlOnly("fi-hetzner", "FI Helsinki-Hetzner", "Hetzner-FI", "https://hel1-speed.hetzner.com/100MB.bin"),
+        dlOnly("us-hetzner", "US Ashburn-Hetzner", "Hetzner-US", "https://ash-speed.hetzner.com/100MB.bin"),
+        dlOnly("sg-hetzner", "SG Singapore-Hetzner", "Hetzner-SG", "https://sin-speed.hetzner.com/100MB.bin"),
+        dlOnly("fr-gra", "FR Gravelines-OVH", "OVH-Gravelines", "https://lil2-gra.speedtest.network.ovh.net/files/1Gb.dat"),
+        dlOnly("fr-rbx", "FR Roubaix-OVH", "OVH-Roubaix", "https://lil1-rbx.speedtest.network.ovh.net/files/1Gb.dat"),
+        dlOnly("uk-eri", "GB Erith-OVH", "OVH-Erith", "https://lon1-eri.speedtest.network.ovh.net/files/1Gb.dat"),
+        dlOnly("ca-bhs", "CA Beauharnois-OVH", "OVH-Beauharnois", "https://ymq1-bhs.speedtest.network.ovh.net/files/1Gb.dat"),
+        dlOnly("us-hil", "US Hillsboro-OVH", "OVH-Hillsboro", "https://pdx1-hil.speedtest.network.ovh.net/files/1Gb.dat"),
+        dlOnly("au-syd", "AU Sydney-OVH", "OVH-Sydney", "https://syd1-sy2.speedtest.network.ovh.net/files/1Gb.dat"),
+        dlOnly("in-bom", "IN Mumbai-OVH", "OVH-Mumbai", "https://bom1-ynm1.speedtest.network.ovh.net/files/1Gb.dat"),
     )
     fun byCode(c: String) = all.firstOrNull { it.code == c } ?: all[0]
 }
@@ -72,14 +87,16 @@ object Engine {
     /** Внешний IP и гео: пробуем несколько сервисов по очереди, т.к. ответ Cloudflare /meta бывает без нужных полей. */
     fun exitInfo(c: OkHttpClient): JSONObject {
         val dbg = StringBuilder()
-        for (u in listOf("https://speed.cloudflare.com/meta", "https://ipinfo.io/json", "http://ip-api.com/json")) {
+        for (u in listOf("https://ipinfo.io/json", "http://ip-api.com/json", "https://speed.cloudflare.com/cdn-cgi/trace")) {
             try {
                 val body = c.newCall(Request.Builder().header("User-Agent", UA).header("Accept", "application/json").url(u).build())
                     .execute().use { r ->
                         if (!r.isSuccessful) throw IOException("HTTP ${r.code}")
                         r.body!!.string()
                     }
-                val j = JSONObject(body)
+                val j = if (body.trimStart().startsWith("{")) JSONObject(body) else JSONObject().also { o ->
+                    body.lines().forEach { ln -> val kv = ln.split("=", limit = 2); if (kv.size == 2) o.put(kv[0], kv[1]) }
+                }
                 val ip = listOf("clientIp", "ip", "query").map { j.optString(it) }.firstOrNull { it.isNotEmpty() }
                 if (ip == null) { dbg.append("$u: нет поля IP: ${body.take(120)}; "); continue }
                 val o = JSONObject().put("clientIp", ip).put("src", java.net.URI(u).host)
@@ -87,6 +104,7 @@ object Engine {
                 val org = listOf("asOrganization", "org", "isp").map { j.optString(it) }.firstOrNull { it.isNotEmpty() }
                 if (org != null) o.put("asOrganization", org)
                 val loc = j.optString("loc")
+                if (!o.has("country") && loc.length == 2) o.put("country", loc)
                 if (loc.contains(",")) { o.put("latitude", loc.substringBefore(",")); o.put("longitude", loc.substringAfter(",")) }
                 for ((k, t) in listOf("latitude" to "latitude", "longitude" to "longitude", "lat" to "latitude", "lon" to "longitude"))
                     if (j.has(k) && !o.has(t)) o.put(t, j.get(k))
