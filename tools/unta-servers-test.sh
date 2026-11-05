@@ -109,7 +109,12 @@ test_dl() { # $1 = -4|-6|"" ; $2 = URL
     elif [ "$rc" = 0 ]; then
         printf '  FAIL  %s  HTTP %s (сервер ответил, но не файлом)  [%s]\n' "$lbl" "$code" "$ip"
     else
-        printf '  FAIL  %s  %s: %s\n' "$lbl" "$(rcname "$rc")" "$(errtxt)"
+        extra=""
+        # соединение не прошло: отвечает ли хост хотя бы на ICMP-пинг? (различает «хост мёртв» и «порт фильтруется»)
+        if [ -z "$PX" ] && { [ "$rc" = 28 ] || [ "$rc" = 7 ]; } && [ -n "$ip" ] && [ "$ip" != "-" ] && command -v ping >/dev/null 2>&1; then
+            if ping -c 1 -W 2 "$ip" >/dev/null 2>&1; then extra="  [$ip: ICMP-пинг ЕСТЬ, значит хост жив, фильтруется TCP]"; else extra="  [$ip: ICMP-пинга тоже нет]"; fi
+        fi
+        printf '  FAIL  %s  %s: %s%s\n' "$lbl" "$(rcname "$rc")" "$(errtxt)" "$extra"
     fi
 }
 
@@ -141,10 +146,10 @@ echo
 echo "$LIST" | while IFS='|' read -r code name dl ul mode; do
     [ -n "$ONLY" ] && case ",$ONLY," in *",$code,"*) ;; *) continue ;; esac
     echo "== $code  ($name)"
-    if [ -n "$PX" ]; then fams=" "; elif [ "$V6" = 1 ]; then fams="-4 -6"; else fams="-4"; fi
+    if [ -n "$PX" ]; then fams="proxy"; elif [ "$V6" = 1 ]; then fams="-4 -6"; else fams="-4"; fi
     for f in $fams; do
-        case "$f" in -4) lbl="IPv4" ;; -6) lbl="IPv6" ;; *) lbl="via-proxy" ;; esac
-        test_dl "$f" "$dl"
+        case "$f" in -4) lbl="IPv4"; fam="-4" ;; -6) lbl="IPv6"; fam="-6" ;; *) lbl="прокси"; fam="" ;; esac
+        test_dl "$fam" "$dl"
     done
     if [ "$UP" = 1 ] && [ "$ul" != "-" ]; then test_ul "$ul" "$mode"; fi
 done
