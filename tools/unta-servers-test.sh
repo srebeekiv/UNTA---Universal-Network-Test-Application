@@ -100,10 +100,10 @@ test_dl() { # $1 = -4|-6|"" ; $2 = URL
         *) u="$url"; rng="-r 0-29999999" ;;
     esac
     res=$(curl -sS -k $fam $PX $DNSARG -A "$UA" --connect-timeout 8 -m "$T" $rng -o /dev/null \
-        -w '%{http_code} %{remote_ip} %{time_namelookup} %{time_connect} %{time_appconnect} %{time_starttransfer} %{size_download} %{speed_download}' \
+        -w '%{http_code}|%{remote_ip}|%{time_namelookup}|%{time_connect}|%{time_appconnect}|%{time_starttransfer}|%{size_download}|%{speed_download}' \
         "$u" 2>"$ERR" </dev/null)
     rc=$?
-    set -- $res
+    OLDIFS="$IFS"; IFS='|'; set -- $res; IFS="$OLDIFS"
     code="${1:-000}"; ip="${2:--}"; dns=$(ms "${3:-0}"); con=$(ms "${4:-0}"); tls=$(ms "${5:-0}"); ttfb=$(ms "${6:-0}"); size="${7:-0}"; spd="${8:-0}"
     if { [ "$rc" = 0 ] || { [ "$rc" = 28 ] && [ "$size" != 0 ]; }; } && { [ "$code" = 200 ] || [ "$code" = 206 ]; }; then
         tcpd=$((con - dns)); [ "$tcpd" -lt 0 ] && tcpd=0
@@ -114,8 +114,9 @@ test_dl() { # $1 = -4|-6|"" ; $2 = URL
     else
         extra=""
         # соединение не прошло: отвечает ли хост хотя бы на ICMP-пинг? (различает «хост мёртв» и «порт фильтруется»)
-        if [ -z "$PX" ] && { [ "$rc" = 28 ] || [ "$rc" = 7 ]; } && [ -n "$ip" ] && [ "$ip" != "-" ] && command -v ping >/dev/null 2>&1; then
-            if ping -c 1 -W 2 "$ip" >/dev/null 2>&1; then extra="  [$ip: ICMP-пинг ЕСТЬ, значит хост жив, фильтруется TCP]"; else extra="  [$ip: ICMP-пинга тоже нет]"; fi
+        if [ -z "$PX" ] && { [ "$rc" = 28 ] || [ "$rc" = 7 ]; } && command -v ping >/dev/null 2>&1; then
+            tgt="$ip"; [ -z "$tgt" ] || [ "$tgt" = "-" ] && tgt=$(echo "$u" | sed 's#^[a-z]*://##; s#[:/].*##')
+            if ping -c 1 -W 2 "$tgt" >/dev/null 2>&1; then extra="  [$tgt: ICMP-пинг ЕСТЬ, хост жив, а TCP не проходит]"; else extra="  [$tgt: ICMP-пинга тоже нет]"; fi
         fi
         printf '  FAIL  %s  %s: %s%s\n' "$lbl" "$(rcname "$rc")" "$(errtxt)" "$extra"
     fi

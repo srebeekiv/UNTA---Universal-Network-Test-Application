@@ -25,16 +25,12 @@ object Servers {
     private fun dlOnly(code: String, label: String, short: String, url: String) =
         Server(code, "$label (только скачивание)", short, url, null, "")
 
-    // Порядок: сначала проверенные рабочие. Tele2-DE и Tele2-SE-Stockholm убраны: их имена не существуют в DNS.
+    // Порядок: сначала проверенные рабочие. Убраны мёртвые узлы Tele2 (проверено с телефона, ПК и через прокси в Нидерландах 2026-11-09).
     val all = listOf(
         Server("cf", "Cloudflare-Anycast", "Cloudflare", "https://speed.cloudflare.com/__down?bytes={BYTES}", "https://speed.cloudflare.com/__up", "multipart"),
         Server("librespeed", "LibreSpeed (авто-выбор сервера)", "LibreSpeed", "https://librespeed.org/backend/garbage.php?ckSize={MB}", "https://librespeed.org/backend/empty.php", "post-raw"),
         t2("tele2-lt", "LT Vilnius-Tele2", "Tele2-LT", "vln038-speedtest-2.tele2.net"),
-        t2("tele2", "Tele2-Anycast-Europe", "Tele2", "speedtest.tele2.net"),
-        t2("tele2-hr", "HR Zagreb-Tele2", "Tele2-HR", "zgb-speedtest-1.tele2.net"),
-        t2("tele2-lv", "LV Riga-Tele2", "Tele2-LV", "bks4-speedtest-1.tele2.net"),
-        t2("tele2-nl", "NL Amsterdam-Tele2", "Tele2-NL", "ams-speedtest-1.tele2.net"),
-        t2("tele2-se-got", "SE Gothenburg-Tele2", "Tele2-SE-Got", "bck-speedtest-1.tele2.net"),
+        t2("tele2-lv", "LV Riga-Tele2 (доступен не из всех сетей)", "Tele2-LV", "bks4-speedtest-1.tele2.net"),
         dlOnly("de-hetzner", "DE Falkenstein-Hetzner", "Hetzner-DE", "https://fsn1-speed.hetzner.com/100MB.bin"),
         dlOnly("fi-hetzner", "FI Helsinki-Hetzner", "Hetzner-FI", "https://hel1-speed.hetzner.com/100MB.bin"),
         dlOnly("us-hetzner", "US Ashburn-Hetzner", "Hetzner-US", "https://ash-speed.hetzner.com/100MB.bin"),

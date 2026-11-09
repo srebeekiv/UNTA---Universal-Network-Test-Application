@@ -27,12 +27,12 @@ function Test-Tcp([string]$h, [int]$port, [int]$ms = 4000) {
 
 function Run-Curl([string]$url, [string[]]$extra) {
     $errFile = [IO.Path]::GetTempFileName()
-    $fmt = '%{http_code} %{remote_ip} %{time_namelookup} %{time_connect} %{time_appconnect} %{time_starttransfer} %{size_download} %{speed_download}'
-    $res = & curl.exe -sS -k @extra --connect-timeout 6 -m $Sec -r 0-29999999 -o NUL -w $fmt $url 2>$errFile
+    $fmt = '%{http_code}|%{remote_ip}|%{time_namelookup}|%{time_connect}|%{time_appconnect}|%{time_starttransfer}|%{size_download}|%{speed_download}'
+    $res = & curl.exe -sS -k @extra --connect-timeout 6 -m $Sec -r 0-29999999 -o NUL --stderr $errFile -w $fmt $url
     $rc = $LASTEXITCODE
     $err = (Get-Content $errFile -ErrorAction SilentlyContinue) -join ' '
     Remove-Item $errFile -ErrorAction SilentlyContinue
-    $p = ("$res").Trim() -split ' '
+    $p = ("$res").Trim() -split '\|'
     if ($p.Count -lt 8) { return "FAIL curl код $rc  $err" }
     $code = $p[0]; $size = [double]::Parse($p[6], $inv); $spd = [double]::Parse($p[7], $inv)
     $ms = { param($v) [int]([double]::Parse($v, $inv) * 1000) }
@@ -40,7 +40,7 @@ function Run-Curl([string]$url, [string[]]$extra) {
     $ok = ($code -eq '200' -or $code -eq '206') -and ($rc -eq 0 -or ($rc -eq 28 -and $size -gt 0))
     if ($ok) {
         $tlsd = if ($tls -gt 0) { $tls - $con } else { 0 }
-        return ("OK   dns {0} мс, tcp {1}, tls {2}, 1-й байт {3} мс, {4} КБ, {5} Мбит/с [{6}]" -f $dns, [Math]::Max($con - $dns, 0), $tlsd, $ttfb, [int]($size / 1000), [Math]::Round($spd * 8 / 1e6, 1), $p[1])
+        return ("OK   dns {0} мс, tcp {1}, tls {2}, 1-й байт {3} мс, {4} КБ, {5} Мбит/с [{6}]" -f $dns, [Math]::Max($con - $dns, 0), $tlsd, $ttfb, [int]($size / 1000), [Math]::Round($spd * 8 / 1e6, 1), $p[1]) + $(if ($p[1] -like '127.*' -and $extra.Count -eq 0) { "  <-- ВНИМАНИЕ: адрес 127.x, трафик перехвачен локальным прокси/TUN, это не прямое соединение" } else { "" })
     }
     if ($rc -eq 0) { return "FAIL HTTP $code (ответил, но не файлом) [$($p[1])]" }
     return "FAIL curl код $rc  $err"
