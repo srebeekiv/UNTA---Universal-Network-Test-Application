@@ -35,6 +35,7 @@ class MainActivity : Activity() {
     private lateinit var logView: TextView
     private lateinit var scroll: ScrollView
     private lateinit var summary: TextView
+    private lateinit var checkBtn: Button
     private lateinit var status: TextView
     private lateinit var bigSpeed: TextView
     private lateinit var bar: ProgressBar
@@ -67,6 +68,7 @@ class MainActivity : Activity() {
         label("Секунд на каждый этап (скачивание, отдача)")
         val secs = num(prefs.getInt("secs", 10))
         val run = Button(this).apply { text = "ИЗМЕРИТЬ" }.also { col.addView(it) }
+        checkBtn = Button(this).apply { text = "БЫСТРАЯ ПРОВЕРКА ПРОКСИ" }.also { col.addView(it) }
 
         status = TextView(this).apply { text = "Готов к измерению"; textSize = 14f; setPadding(0, dp(10), 0, 0) }.also { col.addView(it) }
         bigSpeed = TextView(this).apply { text = "—"; textSize = 30f; typeface = Typeface.DEFAULT_BOLD }.also { col.addView(it) }
@@ -112,12 +114,29 @@ class MainActivity : Activity() {
                 if (s == null) log("Пропущен прокси с неверным адресом: «${e.addr}»") else specs.add(s)
             }
             if (!direct.isChecked && specs.isEmpty()) { log("Выбери «напрямую» или включи прокси в Настройках."); return@setOnClickListener }
-            Engine.cancel.set(false); running = true; run.text = "ОСТАНОВИТЬ"
+            Engine.cancel.set(false); running = true; run.text = "ОСТАНОВИТЬ"; checkBtn.isEnabled = false
             if (logView.text.isNotEmpty()) log("\n----------------------------------------")
             thread {
                 try { measure(srv, th, sc, direct.isChecked, specs) }
                 catch (e: Throwable) { log("ОШИБКА: ${e.javaClass.simpleName}: ${e.message}") }
-                ui.post { running = false; run.isEnabled = true; run.text = "ИЗМЕРИТЬ" }
+                ui.post { running = false; run.isEnabled = true; run.text = "ИЗМЕРИТЬ"; checkBtn.isEnabled = true }
+            }
+        }
+
+        checkBtn.setOnClickListener {
+            if (running) return@setOnClickListener
+            val specs = ArrayList<ProxySpec>()
+            for (e in Prefs.proxies(this).filter { it.enabled }) {
+                val sp = e.toSpec()
+                if (sp == null) log("Пропущен прокси с неверным адресом: «${e.addr}»") else specs.add(sp)
+            }
+            if (specs.isEmpty()) { log("Нет включённых прокси. Добавь их в Настройках."); return@setOnClickListener }
+            running = true; run.isEnabled = false; checkBtn.isEnabled = false
+            if (logView.text.isNotEmpty()) log("\n----------------------------------------")
+            thread {
+                try { proxyCheck(specs) }
+                catch (e: Throwable) { log("ОШИБКА: ${e.javaClass.simpleName}: ${e.message}") }
+                ui.post { running = false; run.isEnabled = true; checkBtn.isEnabled = true }
             }
         }
     }
@@ -136,6 +155,26 @@ class MainActivity : Activity() {
     override fun onOptionsItemSelected(item: MenuItem): Boolean {
         if (item.itemId == 1) { startActivity(Intent(this, SettingsActivity::class.java)); return true }
         return super.onOptionsItemSelected(item)
+    }
+
+    private fun proxyCheck(specs: List<ProxySpec>) {
+        val whenMs = System.currentTimeMillis()
+        val base = Report.baseDir(this, Prefs.path(this))
+        val info = NetInfo.collect(this)
+        ui.post { status.text = "Быстрая проверка прокси"; bigSpeed.text = "—"; graph.reset(10, 1) }
+        log("Сеть: ${Report.pointName(info)} (${info.optString("transport")})")
+        log("Быстрая проверка ${specs.size} прокси (параллельно, без замера скорости)\n")
+        setBar(0.0, "")
+        val results = Engine.checkProxies(specs) { n, total, r ->
+            log("  [$n/$total] " + ProxyReport.line(r))
+            setBar(n.toDouble() / total, "($n из $total)")
+        }
+        val ok = results.count { it.ok }
+        ui.post { bigSpeed.text = "$ok из ${results.size} работают"; status.text = "Готово" }
+        log("\nИтог: работает $ok из ${results.size}")
+        val (json, txt) = ProxyReport.build(info, results, whenMs)
+        val files = Report.save(base, false, ProxyReport.name(whenMs, info), json, txt)
+        log("файл: ${files[0].name}")
     }
 
     private fun setBar(v: Double, text: String) = ui.post {

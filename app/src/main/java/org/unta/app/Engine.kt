@@ -46,6 +46,12 @@ object Servers {
     fun byCode(c: String) = all.firstOrNull { it.code == c } ?: all[0]
 }
 
+data class ProxyCheck(
+    val label: String, val name: String, val kind: String, val ok: Boolean,
+    val tcpMs: Long, val reqMs: Long, val warmMs: Long,
+    val ip: String, val loc: String, val colo: String, val error: String
+)
+
 data class LegResult(
     val title: String, val proxy: String?, val reachable: Boolean, val error: String?, val pingMs: Long?,
     val dlMbps: Double?, val ulMbps: Double?, val dlBytes: Long, val ulBytes: Long,
@@ -230,6 +236,60 @@ object Engine {
         JSONObject().put("dns_ms", t.dns).put("connect_ms", t.connect).put("tls_ms", t.tls)
             .put("first_ms", t.waits.firstOrNull() ?: -1).put("rtt_ms", t.waits.minOrNull() ?: -1)
     } catch (e: Exception) { null }
+
+    /** Быстрая проверка одного прокси: 1) принимает ли он TCP, 2) выходит ли через него интернет (Cloudflare trace). Скорость не меряем. */
+    fun checkProxy(p: ProxySpec): ProxyCheck {
+        val t0 = System.nanoTime()
+        try {
+            java.net.Socket().use { it.connect(java.net.InetSocketAddress(p.host, p.port), 5000) }
+        } catch (e: Exception) {
+            return ProxyCheck(p.label(), p.comment, p.scheme ?: "auto", false, -1, -1, -1, "", "", "",
+                "прокси не принимает соединение: ${e.message ?: e.javaClass.simpleName}")
+        }
+        val tcp = (System.nanoTime() - t0) / 1_000_000
+        val cands = if (p.scheme == null) listOf("socks5h", "http", "socks4") else listOf(p.scheme)
+        var lastErr = ""
+        for (sc in cands) {
+            try {
+                val cand = p.withScheme(sc)
+                val c = Net.client(cand, 5, 8)
+                val req = Request.Builder().header("User-Agent", UA).url("https://speed.cloudflare.com/cdn-cgi/trace").build()
+                val t1 = System.nanoTime()
+                val body = c.newCall(req).execute().use { r ->
+                    if (!r.isSuccessful) throw IOException("HTTP ${r.code}")
+                    r.body!!.string()
+                }
+                val first = (System.nanoTime() - t1) / 1_000_000
+                val t2 = System.nanoTime()
+                c.newCall(req).execute().use { r -> r.body!!.string() }
+                val warm = (System.nanoTime() - t2) / 1_000_000
+                val kv = HashMap<String, String>()
+                body.lines().forEach { ln -> val a = ln.split("=", limit = 2); if (a.size == 2) kv[a[0]] = a[1] }
+                val kind = when { sc.startsWith("socks5") -> "socks5"; sc.startsWith("socks4") -> "socks4"; else -> "HTTP" }
+                return ProxyCheck(cand.label().replace(Regex("^[a-z0-9]+://"), "$kind://"), p.comment, kind, true, tcp, first, warm,
+                    kv["ip"] ?: "", kv["loc"] ?: "", kv["colo"] ?: "", "")
+            } catch (e: Exception) { lastErr = "${sc}: ${e.message ?: e.javaClass.simpleName}" }
+        }
+        return ProxyCheck(p.label(), p.comment, p.scheme ?: "auto", false, tcp, -1, -1, "", "", "",
+            "порт открыт (${tcp} мс), но интернета через прокси нет. Последняя ошибка: $lastErr")
+    }
+
+    /** Все прокси параллельно (до 8 одновременно). onDone вызывается по мере готовности. */
+    fun checkProxies(list: List<ProxySpec>, onDone: (Int, Int, ProxyCheck) -> Unit): List<ProxyCheck> {
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(minOf(8, maxOf(1, list.size)))
+        val results = arrayOfNulls<ProxyCheck>(list.size)
+        val done = AtomicInteger()
+        val fs = list.mapIndexed { i, p ->
+            pool.submit(Runnable {
+                val r = checkProxy(p)
+                results[i] = r
+                onDone(done.incrementAndGet(), list.size, r)
+            })
+        }
+        fs.forEach { try { it.get() } catch (_: Exception) {} }
+        pool.shutdown()
+        return results.filterNotNull()
+    }
 
     class Measured(val mbps: Double?, val bytes: Long, val bad: Int)
 

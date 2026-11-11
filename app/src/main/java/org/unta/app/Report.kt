@@ -95,6 +95,12 @@ object Report {
         return ctx.getExternalFilesDir(null) ?: ctx.filesDir
     }
 
+    fun netTag(info: JSONObject): String = when (info.optString("transport")) {
+        "wifi" -> info.optJSONObject("wifi")?.optString("ssid")?.takeIf { it.isNotEmpty() && !it.startsWith("<") } ?: "WiFi"
+        "mobile" -> info.optJSONObject("mobile")?.optString("generation")?.ifEmpty { null } ?: "mobile"
+        else -> info.optString("transport", "net")
+    }
+
     /** Имя файла: ДАТА_СЕТЬ_(direct | тип_имяПрокси)-Сервер. Сеть: имя Wi-Fi или поколение (5G/4G/3G/2G). */
     fun fileName(whenMs: Long, info: JSONObject, leg: LegResult, s: Server): String {
         val ts = SimpleDateFormat("yyyy.MM.dd-HH.mm.ss", Locale.US).format(Date(whenMs))
