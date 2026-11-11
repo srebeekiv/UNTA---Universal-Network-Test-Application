@@ -114,7 +114,7 @@ object NetInfo {
                     }
                     is CellSignalStrengthWcdma -> {
                         if (!o.has("signal_dbm")) { o.put("signal_dbm", cs.dbm); o.put("level", cs.level) }
-                        if (cs.rscp != Int.MAX_VALUE) o.put("rscp", cs.rscp)
+                        o.put("rscp", cs.dbm)  // у WCDMA уровень сигнала в дБм это и есть RSCP
                         if (cs.ecNo != Int.MAX_VALUE) o.put("ecno", cs.ecNo)
                     }
                     is CellSignalStrengthGsm -> {
