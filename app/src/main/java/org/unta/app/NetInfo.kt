@@ -4,7 +4,14 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.wifi.WifiManager
+import android.telephony.CellIdentityNr
+import android.telephony.CellInfoGsm
+import android.telephony.CellInfoLte
+import android.telephony.CellInfoNr
+import android.telephony.CellInfoWcdma
+import android.telephony.CellSignalStrengthGsm
 import android.telephony.CellSignalStrengthLte
+import android.telephony.CellSignalStrengthWcdma
 import android.telephony.CellSignalStrengthNr
 import android.telephony.TelephonyManager
 import android.location.LocationManager
@@ -87,7 +94,13 @@ object NetInfo {
             val tm = ctx.getSystemService(TelephonyManager::class.java)
             o.put("operator", tm.networkOperatorName)
             o.put("mcc_mnc", tm.networkOperator)
-            try { val nt = netType(tm.dataNetworkType); o.put("network_type", nt); o.put("generation", gen(nt)) } catch (_: SecurityException) {}
+            try {
+                val t = tm.dataNetworkType
+                val ov = if (android.os.Build.VERSION.SDK_INT >= 31) (DisplayInfoProbe.overrideType(ctx) ?: 0) else 0
+                o.put("network_type", techName(t)); o.put("network_type_code", t)
+                if (ov != 0) o.put("display_override", overrideName(ov))
+                o.put("generation", generation(t, ov))
+            } catch (_: SecurityException) {}
             tm.signalStrength?.cellSignalStrengths?.forEach { cs ->
                 if (cs.dbm == Int.MAX_VALUE || cs.dbm == 0) return@forEach
                 when (cs) {
@@ -99,25 +112,103 @@ object NetInfo {
                         o.put("nr_ss_rsrp", cs.ssRsrp); o.put("nr_ss_rsrq", cs.ssRsrq); o.put("nr_ss_sinr", cs.ssSinr)
                         if (!o.has("signal_dbm")) { o.put("signal_dbm", cs.dbm); o.put("level", cs.level) }
                     }
+                    is CellSignalStrengthWcdma -> {
+                        if (!o.has("signal_dbm")) { o.put("signal_dbm", cs.dbm); o.put("level", cs.level) }
+                        if (cs.rscp != Int.MAX_VALUE) o.put("rscp", cs.rscp)
+                        if (cs.ecNo != Int.MAX_VALUE) o.put("ecno", cs.ecNo)
+                    }
+                    is CellSignalStrengthGsm -> {
+                        if (!o.has("signal_dbm")) { o.put("signal_dbm", cs.dbm); o.put("level", cs.level) }
+                        if (cs.timingAdvance != Int.MAX_VALUE) o.put("ta", cs.timingAdvance)
+                    }
                     else -> if (!o.has("signal_dbm")) { o.put("signal_dbm", cs.dbm); o.put("level", cs.level) }
                 }
             }
+            cell(tm)?.let { o.put("cell", it) }
         } catch (e: Exception) { o.put("error", e.message ?: e.javaClass.simpleName) }
         return o
     }
 
-    private fun gen(n: String) = when {
-        n.contains("5G") -> "5G"
-        n.contains("LTE") -> "4G"
-        n.contains("HS") || n.contains("UMTS") -> "3G"
-        n.contains("EDGE") || n.contains("GPRS") || n.contains("GSM") -> "2G"
-        else -> "mobile"
+    /** Технические имена типов сети Android (TelephonyManager.NETWORK_TYPE_*). */
+    private fun techName(t: Int) = when (t) {
+        1 -> "GPRS"; 2 -> "EDGE"; 3 -> "UMTS"; 4 -> "CDMA"; 5 -> "EVDO_0"; 6 -> "EVDO_A"; 7 -> "1xRTT"
+        8 -> "HSDPA"; 9 -> "HSUPA"; 10 -> "HSPA"; 11 -> "iDEN"; 12 -> "EVDO_B"; 13 -> "LTE"; 14 -> "eHRPD"
+        15 -> "HSPA+"; 16 -> "GSM"; 17 -> "TD-SCDMA"; 18 -> "IWLAN"; 19 -> "LTE_CA"; 20 -> "NR"; 0 -> "UNKNOWN"
+        else -> "TYPE_$t"
     }
 
-    private fun netType(t: Int) = when (t) {
-        20 -> "5G NR"; 13 -> "LTE"; 19 -> "LTE-CA"; 15 -> "HSPA+"; 10 -> "HSPA"; 8 -> "HSDPA"; 9 -> "HSUPA"
-        3 -> "UMTS"; 2 -> "EDGE"; 1 -> "GPRS"; 16 -> "GSM"; 0 -> "unknown"; else -> "type $t"
+    fun techNote(name: String) = when (name) {
+        "GSM" -> "GSM (2G)"
+        "GPRS" -> "GPRS (2.5G, пакетные данные поверх GSM)"
+        "EDGE" -> "EDGE / EGPRS (2.75G, значок E)"
+        "UMTS" -> "UMTS / WCDMA (3G)"
+        "HSDPA" -> "HSDPA (3.5G, значок H)"
+        "HSUPA" -> "HSUPA (3.5G)"
+        "HSPA" -> "HSPA (3.5G, значок H)"
+        "HSPA+" -> "HSPA+ (3.75G, значок H+)"
+        "TD-SCDMA" -> "TD-SCDMA (3G)"
+        "LTE" -> "LTE (4G)"
+        "LTE_CA" -> "LTE-Advanced, агрегация несущих (4G+)"
+        "NR" -> "5G NR (автономный режим)"
+        "IWLAN" -> "IWLAN (звонки и данные через Wi-Fi)"
+        else -> name
     }
+
+    /** Поколение «как называют операторы». Половинки (2.5G, 3.5G, 4.5G) это маркетинг, а не стандарты. */
+    private fun generation(t: Int, override: Int): String {
+        val base = when (t) {
+            16, 4, 11 -> "2G"; 1, 7 -> "2.5G"; 2 -> "2.75G"
+            3, 5, 6, 17 -> "3G"; 8, 9, 10, 12, 14 -> "3.5G"; 15 -> "3.75G"
+            13 -> "4G"; 19 -> "4G+"; 20 -> "5G"; 18 -> "Wi-Fi Calling"; else -> "mobile"
+        }
+        return when (override) { 1 -> if (t == 13) "4G+" else base; 2 -> "4.5G"; 3 -> "5G"; 4, 5 -> "5G+"; else -> base }
+    }
+
+    private fun overrideName(o: Int) = when (o) {
+        1 -> "LTE_CA"; 2 -> "LTE_ADVANCED_PRO"; 3 -> "NR_NSA"; 4 -> "NR_NSA_MMWAVE"; 5 -> "NR_ADVANCED"; else -> ""
+    }
+
+    fun overrideNote(n: String) = when (n) {
+        "LTE_CA" -> "LTE_CA (LTE-Advanced, агрегация несущих)"
+        "LTE_ADVANCED_PRO" -> "LTE_ADVANCED_PRO (LTE-Advanced Pro, в рекламе 4.5G или 5Ge)"
+        "NR_NSA" -> "NR_NSA (5G поверх сети LTE)"
+        "NR_NSA_MMWAVE" -> "NR_NSA_MMWAVE (5G mmWave поверх LTE)"
+        "NR_ADVANCED" -> "NR_ADVANCED (5G Advanced / 5G+)"
+        else -> n
+    }
+
+    fun genRu(g: String) = g.replace('.', ',')
+
+    /** Ячейка, к которой подключён телефон: канал, PCI, диапазон. Нужна геолокация. */
+    private fun cell(tm: TelephonyManager): JSONObject? = try {
+        val ci = tm.allCellInfo?.firstOrNull { it.isRegistered }
+        fun JSONObject.i(k: String, v: Int) { if (v != Int.MAX_VALUE && v != -1) put(k, v) }
+        when (ci) {
+            is CellInfoLte -> {
+                val id = ci.cellIdentity
+                JSONObject().put("tech", "LTE").also {
+                    it.i("EARFCN", id.earfcn); it.i("PCI", id.pci); it.i("TAC", id.tac); it.i("CI", id.ci)
+                    if (android.os.Build.VERSION.SDK_INT >= 30 && id.bands.isNotEmpty()) it.put("диапазоны", id.bands.joinToString(","))
+                }
+            }
+            is CellInfoNr -> {
+                val id = ci.cellIdentity as CellIdentityNr
+                JSONObject().put("tech", "NR").also {
+                    it.i("NRARFCN", id.nrarfcn); it.i("PCI", id.pci); it.i("TAC", id.tac)
+                    if (android.os.Build.VERSION.SDK_INT >= 30 && id.bands.isNotEmpty()) it.put("диапазоны", id.bands.joinToString(","))
+                }
+            }
+            is CellInfoWcdma -> {
+                val id = ci.cellIdentity
+                JSONObject().put("tech", "WCDMA").also { it.i("UARFCN", id.uarfcn); it.i("PSC", id.psc); it.i("LAC", id.lac); it.i("CID", id.cid) }
+            }
+            is CellInfoGsm -> {
+                val id = ci.cellIdentity
+                JSONObject().put("tech", "GSM").also { it.i("ARFCN", id.arfcn); it.i("BSIC", id.bsic); it.i("LAC", id.lac); it.i("CID", id.cid) }
+            }
+            else -> null
+        }
+    } catch (_: Exception) { null }
 
     private fun location(ctx: Context): JSONObject? = try {
         val lm = ctx.getSystemService(LocationManager::class.java)

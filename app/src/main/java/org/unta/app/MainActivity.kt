@@ -14,6 +14,12 @@ import android.text.InputType
 import android.view.Menu
 import android.view.MenuItem
 import android.view.ViewGroup
+import android.text.Editable
+import android.text.TextWatcher
+import android.view.View
+import android.widget.BaseAdapter
+import android.widget.FrameLayout
+import android.widget.ListView
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.CheckBox
@@ -36,6 +42,15 @@ class MainActivity : Activity() {
     private lateinit var scroll: ScrollView
     private lateinit var summary: TextView
     private lateinit var checkBtn: Button
+    private lateinit var historyRoot: LinearLayout
+    private lateinit var histInfo: TextView
+    private lateinit var histSearch: EditText
+    private lateinit var histAdapter: BaseAdapter
+    private lateinit var tabMeasure: Button
+    private lateinit var tabHistory: Button
+    private var histAll: List<HistoryItem> = emptyList()
+    private val histShown = ArrayList<HistoryItem>()
+    private var tab = 0
     private lateinit var status: TextView
     private lateinit var bigSpeed: TextView
     private lateinit var bar: ProgressBar
@@ -92,7 +107,20 @@ class MainActivity : Activity() {
         logView = TextView(this).apply { typeface = Typeface.MONOSPACE; textSize = 12f; setTextIsSelectable(true); setPadding(0, dp(4), 0, 0) }
         col.addView(logView, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         scroll = ScrollView(this).apply { addView(col) }
-        setContentView(scroll)
+        buildHistoryUi()
+        tabMeasure = Button(this).apply { text = "ЗАМЕР"; setOnClickListener { showTab(0) } }
+        tabHistory = Button(this).apply { text = "ИСТОРИЯ"; setOnClickListener { showTab(1) } }
+        val tabs = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        tabs.addView(tabMeasure, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        tabs.addView(tabHistory, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        val frame = FrameLayout(this)
+        frame.addView(scroll, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        frame.addView(historyRoot, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        root.addView(tabs)
+        root.addView(frame, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        setContentView(root)
+        showTab(0)
 
         val need = listOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.READ_PHONE_STATE)
             .filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
@@ -141,8 +169,71 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun showTab(i: Int) {
+        tab = i
+        scroll.visibility = if (i == 0) View.VISIBLE else View.GONE
+        historyRoot.visibility = if (i == 1) View.VISIBLE else View.GONE
+        tabMeasure.alpha = if (i == 0) 1f else 0.5f
+        tabHistory.alpha = if (i == 1) 1f else 0.5f
+        if (i == 1) loadHistory()
+    }
+
+    private fun buildHistoryUi() {
+        historyRoot = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), dp(8), dp(12), 0) }
+        histSearch = EditText(this).apply { hint = "Поиск: точка, оператор, сервер, прокси"; setSingleLine(); textSize = 14f }
+        histSearch.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun afterTextChanged(s: Editable?) { applyFilter() }
+        })
+        histInfo = TextView(this).apply { textSize = 12f; setPadding(0, dp(2), 0, dp(4)) }
+        histAdapter = object : BaseAdapter() {
+            override fun getCount() = histShown.size
+            override fun getItem(position: Int) = histShown[position]
+            override fun getItemId(position: Int) = position.toLong()
+            override fun getView(position: Int, convertView: View?, parent: ViewGroup?): View {
+                val row = (convertView as? LinearLayout) ?: LinearLayout(this@MainActivity).apply {
+                    orientation = LinearLayout.VERTICAL; setPadding(0, dp(8), 0, dp(8))
+                    addView(TextView(this@MainActivity).apply { textSize = 15f; typeface = Typeface.DEFAULT_BOLD })
+                    addView(TextView(this@MainActivity).apply { textSize = 13f; alpha = 0.75f })
+                }
+                val it = histShown[position]
+                (row.getChildAt(0) as TextView).text = it.title
+                (row.getChildAt(1) as TextView).text = it.subtitle
+                return row
+            }
+        }
+        val list = ListView(this).apply {
+            adapter = histAdapter
+            setOnItemClickListener { _, _, pos, _ ->
+                startActivity(Intent(this@MainActivity, DetailActivity::class.java).putExtra("path", histShown[pos].file.absolutePath))
+            }
+        }
+        historyRoot.addView(histSearch)
+        historyRoot.addView(histInfo)
+        historyRoot.addView(list, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+    }
+
+    private fun applyFilter() {
+        val q = histSearch.text.toString().trim().lowercase()
+        histShown.clear()
+        histShown.addAll(if (q.isEmpty()) histAll else histAll.filter { it.search.contains(q) })
+        histAdapter.notifyDataSetChanged()
+        histInfo.text = "Записей: ${histShown.size} из ${histAll.size}"
+    }
+
+    private fun loadHistory() {
+        histInfo.text = "Загрузка..."
+        val base = Report.baseDir(this, Prefs.path(this))
+        thread {
+            val items = History.load(base)
+            ui.post { histAll = items; applyFilter() }
+        }
+    }
+
     override fun onResume() {
         super.onResume()
+        if (tab == 1) loadHistory()
         val all = Prefs.proxies(this)
         summary.text = "Прокси включено: ${all.count { it.enabled }} из ${all.size}\nПапка: …/${Prefs.path(this).trimEnd('/').split('/').takeLast(2).joinToString("/")}/tests\n(нажми сюда или «Настройки» вверху)"
     }

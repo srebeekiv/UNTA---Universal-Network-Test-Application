@@ -47,25 +47,7 @@ object Report {
         t.append("Устройство: ${Build.MODEL}\n")
         t.append("Сервер: ${legs.firstOrNull()?.server?.ifEmpty { null } ?: server.label}  |  потоков: $threads  |  секунд на этап: $secs\n")
         t.append("Точка: ${pointName(info)}  |  канал связи: ${info.optString("transport")}\n")
-        info.optJSONArray("local_ips")?.let { t.append("Локальные IP: ${(0 until it.length()).joinToString(", ") { i -> it.getString(i) }}\n") }
-        info.optJSONObject("wifi")?.let { w ->
-            t.append("Wi-Fi: ${w.optString("ssid")}  BSSID ${w.optString("bssid")}\n")
-            t.append("  сигнал ${w.optInt("rssi_dbm")} дБм, канал ${w.optInt("channel")} (${w.optInt("frequency_mhz")} МГц)")
-            if (w.has("width_mhz")) t.append(", ширина ${w.get("width_mhz")} МГц")
-            t.append("\n  ${w.optString("standard")}, скорость соединения ${w.optInt("link_speed_mbps")} Мбит/с (tx ${w.optInt("tx_link_speed_mbps")}, rx ${w.optInt("rx_link_speed_mbps")})\n")
-        }
-        info.optJSONObject("mobile")?.let { m ->
-            t.append("Моб. сеть: ${m.optString("operator")} (${m.optString("mcc_mnc")}) ${m.optString("network_type")}\n")
-            if (m.has("signal_dbm")) {
-                t.append("  сигнал ${m.optInt("signal_dbm")} дБм, уровень ${m.optInt("level")}/4")
-                if (m.has("rsrp")) t.append(", RSRP ${m.optInt("rsrp")}, RSRQ ${m.optInt("rsrq")}, SINR ${m.optInt("rssnr")}")
-                t.append('\n')
-            }
-        }
-        info.optJSONObject("location")?.let {
-            t.append("Координаты: ${it.optDouble("lat")}, ${it.optDouble("lon")} (точность ${it.optDouble("accuracy_m").toInt()} м)\n")
-            t.append("  https://www.openstreetmap.org/?mlat=${it.optDouble("lat")}&mlon=${it.optDouble("lon")}#map=17/${it.optDouble("lat")}/${it.optDouble("lon")}\n")
-        }
+        t.append(networkText(info))
         t.append("\n")
         for (l in legs) {
             t.append("== ${l.title}\n")
@@ -82,6 +64,44 @@ object Report {
             t.append('\n')
         }
         return j to t.toString()
+    }
+
+    /** Блок «сеть и сигнал»: используется и в txt-файле, и на экране подробностей истории. */
+    fun networkText(info: JSONObject): String {
+        val t = StringBuilder()
+        info.optJSONArray("local_ips")?.let { t.append("Локальные IP: ${(0 until it.length()).joinToString(", ") { i -> it.getString(i) }}\n") }
+        info.optJSONObject("wifi")?.let { w ->
+            t.append("Wi-Fi: ${w.optString("ssid")}  BSSID ${w.optString("bssid")}\n")
+            t.append("  сигнал ${w.optInt("rssi_dbm")} дБм, канал ${w.optInt("channel")} (${w.optInt("frequency_mhz")} МГц)")
+            if (w.has("width_mhz")) t.append(", ширина ${w.get("width_mhz")} МГц")
+            t.append("\n  ${w.optString("standard")}, скорость соединения ${w.optInt("link_speed_mbps")} Мбит/с (tx ${w.optInt("tx_link_speed_mbps")}, rx ${w.optInt("rx_link_speed_mbps")})\n")
+        }
+        info.optJSONObject("mobile")?.let { m ->
+            t.append("Моб. сеть: оператор ${m.optString("operator")} (MCC/MNC ${m.optString("mcc_mnc")})\n")
+            val tech = m.optString("network_type")
+            if (tech.isNotEmpty()) t.append("  поколение: ${NetInfo.genRu(m.optString("generation"))}  |  технический тип: ${NetInfo.techNote(tech)}\n")
+            val ov = m.optString("display_override")
+            if (ov.isNotEmpty()) t.append("  Android показывает в строке состояния: ${NetInfo.overrideNote(ov)}\n")
+            if (m.has("signal_dbm")) {
+                t.append("  сигнал ${m.optInt("signal_dbm")} дБм, уровень ${m.optInt("level")}/4")
+                if (m.has("rsrp")) t.append(", RSRP ${m.optInt("rsrp")}, RSRQ ${m.optInt("rsrq")}, SINR ${m.optInt("rssnr")}")
+                if (m.has("nr_ss_rsrp")) t.append(", 5G SS-RSRP ${m.optInt("nr_ss_rsrp")}, SS-RSRQ ${m.optInt("nr_ss_rsrq")}, SS-SINR ${m.optInt("nr_ss_sinr")}")
+                if (m.has("rscp")) t.append(", RSCP ${m.optInt("rscp")}")
+                if (m.has("ecno")) t.append(", Ec/No ${m.optInt("ecno")}")
+                if (m.has("ta")) t.append(", TA ${m.optInt("ta")}")
+                t.append('\n')
+            }
+            m.optJSONObject("cell")?.let { c ->
+                val parts = ArrayList<String>()
+                for (k in c.keys()) parts.add("$k ${c.get(k)}")
+                t.append("  ячейка: ${parts.joinToString(", ")}\n")
+            }
+        }
+        info.optJSONObject("location")?.let {
+            t.append("Координаты: ${it.optDouble("lat")}, ${it.optDouble("lon")} (точность ${it.optDouble("accuracy_m").toInt()} м)\n")
+            t.append("  https://www.openstreetmap.org/?mlat=${it.optDouble("lat")}&mlon=${it.optDouble("lon")}#map=17/${it.optDouble("lat")}/${it.optDouble("lon")}\n")
+        }
+        return t.toString()
     }
 
     /** Пароль в сохранённые файлы не пишем. */
@@ -111,7 +131,7 @@ object Report {
         }
         val mid = if (leg.kind == "direct") "direct"
         else leg.kind + "_" + clean(if (leg.pname.isNotBlank()) leg.pname else leg.hostPort)
-        return "${ts}_${clean(net)}_${mid}-${clean(s.short)}"
+        return "${ts}_${clean(net.replace("+", "plus"))}_${mid}-${clean(s.short)}"
     }
 
     /** <папка>/tests/<имя>.txt и <папка>/tests/json/<имя>.json (запланированные: tests/scheduled/...) */

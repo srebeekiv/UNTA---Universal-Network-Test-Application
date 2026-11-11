@@ -9,7 +9,7 @@ import java.util.Locale
 
 object ProxyReport {
     fun name(whenMs: Long, info: JSONObject): String =
-        SimpleDateFormat("yyyy.MM.dd-HH.mm.ss", Locale.US).format(Date(whenMs)) + "_" + Report.clean(Report.netTag(info)) + "_proxycheck"
+        SimpleDateFormat("yyyy.MM.dd-HH.mm.ss", Locale.US).format(Date(whenMs)) + "_" + Report.clean(Report.netTag(info).replace("+", "plus")) + "_proxycheck"
 
     fun line(r: ProxyCheck): String {
         val n = if (r.name.isNotBlank()) r.name + " " else ""
@@ -26,7 +26,7 @@ object ProxyReport {
         for (r in results) arr.put(JSONObject().put("name", r.name).put("proxy", masked(r.label)).put("type", r.kind).put("ok", r.ok)
             .put("tcp_to_proxy_ms", r.tcpMs).put("request_ms", r.reqMs).put("repeat_ms", r.warmMs)
             .put("exit_ip", r.ip).put("country", r.loc).put("colo", r.colo).put("error", r.error))
-        val j = JSONObject().put("app", "UNTA").put("kind", "proxycheck").put("time_iso", iso).put("device", Build.MODEL)
+        val j = JSONObject().put("app", "UNTA").put("kind", "proxycheck").put("time_iso", iso).put("time_epoch", whenMs / 1000).put("device", Build.MODEL)
             .put("network", info).put("ok", results.count { it.ok }).put("total", results.size).put("proxies", arr)
         val t = StringBuilder()
         t.append("UNTA: быстрая проверка прокси  |  $iso\n")
