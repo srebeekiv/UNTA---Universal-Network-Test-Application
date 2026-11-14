@@ -32,6 +32,11 @@ data class ProxyEntry(
     }
 }
 
+/** Слой retromap.ru: название для себя и ссылка или код слоя. Код берётся из адресной строки сайта. */
+data class RetroPreset(var name: String = "", var link: String = "") {
+    fun code(): String? = Regex("(?:retromap\\.ru/)?(\\d{5,})").find(link)?.groupValues?.get(1)
+}
+
 object Prefs {
     private fun sp(c: Context) = c.getSharedPreferences("unta", Context.MODE_PRIVATE)
 
@@ -61,5 +66,19 @@ object Prefs {
     fun saveProxies(c: Context, list: List<ProxyEntry>) {
         val a = JSONArray(); list.forEach { a.put(it.toJson()) }
         sp(c).edit().putString("proxies_v2", a.toString()).apply()
+    }
+
+    private val retroDefaults = listOf("0420092", "0020092", "04200913", "1418726", "14194016")
+
+    fun retro(c: Context): MutableList<RetroPreset> {
+        val js = sp(c).getString("retro_presets", null)
+        if (js == null) return retroDefaults.map { RetroPreset("Слой $it", it) }.toMutableList()
+        val a = JSONArray(js)
+        return MutableList(a.length()) { val o = a.getJSONObject(it); RetroPreset(o.optString("name"), o.optString("link")) }
+    }
+
+    fun saveRetro(c: Context, list: List<RetroPreset>) {
+        val a = JSONArray(); list.forEach { a.put(JSONObject().put("name", it.name).put("link", it.link)) }
+        sp(c).edit().putString("retro_presets", a.toString()).apply()
     }
 }

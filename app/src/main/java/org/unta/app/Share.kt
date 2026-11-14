@@ -22,9 +22,9 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.Locale
 
-/** Открыть координаты на карте: выбор сервиса. */
+/** Открыть координаты на карте: выбор сервиса. Слои retromap.ru берутся из списка в Настройках. */
 object MapLinks {
-    private val names = listOf("OpenStreetMap: карта", "Google Maps: карта", "Google Maps: спутник", "Яндекс Карты: карта", "Яндекс Карты: спутник", "retromap.ru")
+    private val names = listOf("OpenStreetMap: карта", "Google Maps: карта", "Google Maps: спутник", "Яндекс Карты: карта", "Яндекс Карты: спутник")
 
     private fun url(i: Int, lat: Double, lon: Double): String {
         val la = "%.6f".format(Locale.US, lat); val lo = "%.6f".format(Locale.US, lon)
@@ -33,20 +33,21 @@ object MapLinks {
             1 -> "https://www.google.com/maps/search/?api=1&query=$la,$lo"
             2 -> "https://www.google.com/maps/@?api=1&map_action=map&center=$la,$lo&zoom=17&basemap=satellite"
             3 -> "https://yandex.ru/maps/?ll=$lo,$la&z=17&pt=$lo,$la,pm2rdm&l=map"
-            4 -> "https://yandex.ru/maps/?ll=$lo,$la&z=17&pt=$lo,$la,pm2rdm&l=sat"
-            else -> "https://retromap.ru/"
+            else -> "https://yandex.ru/maps/?ll=$lo,$la&z=17&pt=$lo,$la,pm2rdm&l=sat"
         }
     }
 
-    fun choose(ctx: Activity, lat: Double, lon: Double, what: String) {
+    /** Формат ссылки retromap.ru: /КОДСЛОЯ_zМАСШТАБ_широта,долгота */
+    private fun retroUrl(code: String, lat: Double, lon: Double, zoom: Int) =
+        "https://retromap.ru/${code}_z${zoom}_${"%.6f".format(Locale.US, lat)},${"%.6f".format(Locale.US, lon)}"
+
+    fun choose(ctx: Activity, lat: Double, lon: Double, what: String, zoom: Int = 15) {
+        val retro = Prefs.retro(ctx).mapNotNull { r -> r.code()?.let { code -> (r.name.ifBlank { "слой $code" }) to code } }
+        val items = names + retro.map { "retromap.ru: ${it.first}" }
         AlertDialog.Builder(ctx).setTitle("Открыть на карте: $what")
-            .setItems(names.toTypedArray()) { _, i ->
-                if (i == 5) {
-                    // точный формат ссылки retromap не подтверждён: открываем сайт и кладём координаты в буфер обмена
-                    ctx.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("coords", "%.6f, %.6f".format(Locale.US, lat, lon)))
-                    Toast.makeText(ctx, "Координаты скопированы, вставьте их в поиск retromap.ru", Toast.LENGTH_LONG).show()
-                }
-                try { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url(i, lat, lon)))) }
+            .setItems(items.toTypedArray()) { _, i ->
+                val u = if (i < names.size) url(i, lat, lon) else retroUrl(retro[i - names.size].second, lat, lon, zoom)
+                try { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(u))) }
                 catch (e: Exception) { Toast.makeText(ctx, "Не удалось открыть браузер", Toast.LENGTH_LONG).show() }
             }.setNegativeButton("Отмена", null).show()
     }
@@ -107,6 +108,35 @@ object GraphExport {
 
 /** Что и как отправлять. Результат (скорость, сервер, прямое или через прокси) в тексте есть всегда. */
 object ShareBuilder {
+    /** Полный текст, который не поместился в подпись под картинкой (у Telegram подпись не длиннее 1024 знаков). */
+    var pendingText: String? = null
+
+    fun checkPending(ctx: Activity) {
+        val t = pendingText ?: return
+        pendingText = null
+        AlertDialog.Builder(ctx).setTitle("Полный текст")
+            .setMessage("Мессенджеры обрезают подпись под картинкой (Telegram до 1000 знаков), поэтому к картинке ушла краткая сводка. Отправить полный текст отдельным сообщением?")
+            .setPositiveButton("Отправить текст") { _, _ ->
+                val i = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, t)
+                ctx.startActivity(Intent.createChooser(i, "Полный текст"))
+            }
+            .setNegativeButton("Не нужно", null).show()
+    }
+
+    private fun caption(recs: List<JSONObject>, sel: Set<String>): String {
+        val sb = StringBuilder("UNTA: замеры скорости интернета\n")
+        recs.forEachIndexed { i, j ->
+            val leg = j.optJSONArray("legs")?.optJSONObject(0)
+            val srv = j.optJSONObject("server")?.optString("label") ?: ""
+            val kind = leg?.optString("kind")?.ifEmpty { "direct" } ?: "direct"
+            sb.append("${i + 1}) ${if (kind == "direct") "напрямую" else "через прокси ($kind)"} → $srv: ")
+            if (leg != null) sb.append(HistoryFmt.resultLine(leg))
+            if ("net" in sel) sb.append(" · ").append(HistoryFmt.netHeader(j.optJSONObject("network")))
+            sb.append('\n')
+        }
+        return if (sb.length > 1000) sb.substring(0, 997) + "..." else sb.toString()
+    }
+
     private val keys = listOf("geo_device", "net", "proxy_name", "proxy_addr", "geo_exit", "exit_ip", "graph")
     private val labels = listOf(
         "Гео устройства (где был телефон)", "Имя сети (точка доступа или оператор)", "Имя прокси", "Адрес прокси",
@@ -179,18 +209,21 @@ object ShareBuilder {
     }
 
     fun send(ctx: Activity, recs: List<JSONObject>, sel: Set<String>) {
+        val full = text(recs, sel)
         val intent = Intent(Intent.ACTION_SEND)
-        intent.putExtra(Intent.EXTRA_TEXT, text(recs, sel))
         intent.putExtra(Intent.EXTRA_SUBJECT, "UNTA: замер сети")
         intent.type = "text/plain"
+        var body = full
         if ("graph" in sel) {
             val uri = try { GraphExport.render(ctx, recs)?.let { saveBitmap(ctx, it) } } catch (e: Exception) { null }
             if (uri != null) {
                 intent.type = "image/png"
                 intent.putExtra(Intent.EXTRA_STREAM, uri)
                 intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                if (full.length > 1000) { body = caption(recs, sel); pendingText = full }
             } else Toast.makeText(ctx, "Графика для этих замеров нет (старые записи) или не удалось её сохранить: отправляю текст", Toast.LENGTH_LONG).show()
         }
+        intent.putExtra(Intent.EXTRA_TEXT, body)
         ctx.startActivity(Intent.createChooser(intent, "Поделиться замером"))
     }
 }

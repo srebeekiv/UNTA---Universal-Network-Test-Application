@@ -244,6 +244,7 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        ShareBuilder.checkPending(this)
         if (tab == 1) loadHistory()
         val all = Prefs.proxies(this)
         summary.text = "Прокси включено: ${all.count { it.enabled }} из ${all.size}\nПапка: …/${Prefs.path(this).trimEnd('/').split('/').takeLast(2).joinToString("/")}/tests\n(нажми сюда или «Настройки» вверху)"

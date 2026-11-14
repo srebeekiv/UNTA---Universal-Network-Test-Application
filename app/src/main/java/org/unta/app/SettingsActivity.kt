@@ -29,6 +29,8 @@ class SettingsActivity : Activity() {
     private lateinit var pathEdit: EditText
     private lateinit var list: LinearLayout
     private lateinit var entries: MutableList<ProxyEntry>
+    private lateinit var retroEntries: MutableList<RetroPreset>
+    private lateinit var retroList: LinearLayout
     private val types = listOf("Auto", "HTTP(s)", "socks4", "socks5")
     private val codes = listOf("auto", "http", "socks4", "socks5")
 
@@ -45,6 +47,7 @@ class SettingsActivity : Activity() {
         title = "Настройки"
         actionBar?.setDisplayHomeAsUpEnabled(true)
         entries = Prefs.proxies(this)
+        retroEntries = Prefs.retro(this)
 
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), dp(12), dp(12), dp(24)) }
         fun label(t: String, size: Float = 13f) = TextView(this).apply { text = t; textSize = size; setPadding(0, dp(12), 0, dp(2)) }.also { col.addView(it) }
@@ -77,7 +80,35 @@ class SettingsActivity : Activity() {
                 val e = ProxyEntry(); entries.add(e); addRow(e)
             }
         })
+
+        label("Слои retromap.ru для кнопки «Карта»", 16f)
+        label("Открой retromap.ru, выбери нужный слой и скопируй ссылку из адресной строки (например https://retromap.ru/0420092_z12_50.46,30.48). Вставь её сюда: код слоя приложение возьмёт само, а координаты и масштаб подставит при открытии карты. Название задай любое, для себя.")
+        retroList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        col.addView(retroList)
+        retroEntries.forEach { addRetroRow(it) }
+        col.addView(Button(this).apply {
+            text = "+ Добавить слой retromap"
+            setOnClickListener { val r = RetroPreset(); retroEntries.add(r); addRetroRow(r) }
+        })
         setContentView(ScrollView(this).apply { addView(col) })
+    }
+
+    private fun addRetroRow(r: RetroPreset) {
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(10), dp(8), dp(10), dp(8))
+            background = GradientDrawable().apply { cornerRadius = dp(10).toFloat(); setStroke(dp(1), 0x66888888) }
+        }
+        val name = EditText(this).apply { hint = "Название слоя (для себя)"; setText(r.name); setSingleLine(); textSize = 14f }
+        val link = EditText(this).apply { hint = "Ссылка retromap.ru или только код слоя"; setText(r.link); setSingleLine(); textSize = 14f; inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI }
+        val del = Button(this).apply { text = "Удалить" }
+        card.addView(name); card.addView(link); card.addView(del)
+        name.onChange { r.name = it }
+        link.onChange { r.link = it }
+        del.setOnClickListener { retroList.removeView(card); retroEntries.remove(r) }
+        val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        lp.topMargin = dp(10)
+        retroList.addView(card, lp)
     }
 
     private fun addRow(e: ProxyEntry) {
@@ -165,6 +196,7 @@ class SettingsActivity : Activity() {
         super.onPause()
         Prefs.setPath(this, pathEdit.text.toString())
         Prefs.saveProxies(this, entries)
+        Prefs.saveRetro(this, retroEntries)
     }
 
     override fun onOptionsItemSelected(item: MenuItem): Boolean {

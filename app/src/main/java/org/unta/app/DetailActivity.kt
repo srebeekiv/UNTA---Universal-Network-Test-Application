@@ -46,14 +46,19 @@ class DetailActivity : Activity() {
         val loc = j.optJSONObject("network")?.optJSONObject("location")
         val exit = HistoryFmt.exitLatLon(j.optJSONArray("legs")?.optJSONObject(0)?.optJSONObject("exit"))
         val maps = ArrayList<Button>()
-        if (loc != null) maps.add(btn("Карта: устройство") { MapLinks.choose(this, loc.optDouble("lat"), loc.optDouble("lon"), "устройство") })
-        if (exit != null) maps.add(btn("Карта: IP / прокси") { MapLinks.choose(this, exit.first, exit.second, "выходной IP (приблизительно)") })
+        if (loc != null) maps.add(btn("Карта: устройство") { MapLinks.choose(this, loc.optDouble("lat"), loc.optDouble("lon"), "устройство", 16) })
+        if (exit != null) maps.add(btn("Карта: IP / прокси") { MapLinks.choose(this, exit.first, exit.second, "выходной IP (приблизительно)", 11) })
         if (maps.isNotEmpty()) row(*maps.toTypedArray())
 
         col.addView(TextView(this).apply {
             this.text = text; textSize = 13f; typeface = Typeface.MONOSPACE; setTextIsSelectable(true); setPadding(0, dp(8), 0, 0)
         })
         setContentView(ScrollView(this).apply { addView(col) })
+    }
+
+    override fun onResume() {
+        super.onResume()
+        ShareBuilder.checkPending(this)
     }
 
     override fun onOptionsItemSelected(item: MenuItem): Boolean {
