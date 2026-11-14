@@ -38,6 +38,8 @@ object Report {
                 .put("download_errors", l.dlBad).put("upload_errors", l.ulBad)
             l.exit?.let { o.put("exit", it) }
             l.latency?.let { o.put("latency", it) }
+            o.put("kind", l.kind).put("proxy_name", l.pname)
+            l.graph?.let { o.put("graph", it) }
             arr.put(o)
         }
         j.put("legs", arr)

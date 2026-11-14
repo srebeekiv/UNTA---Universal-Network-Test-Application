@@ -5,6 +5,7 @@ import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Typeface
+import org.json.JSONObject
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
@@ -55,7 +56,10 @@ class MainActivity : Activity() {
     private lateinit var bigSpeed: TextView
     private lateinit var bar: ProgressBar
     private lateinit var barText: TextView
-    private lateinit var graph: SpeedGraph
+    private lateinit var graphsBox: LinearLayout
+    private var curGraph: SpeedGraph? = null
+    private var curSub: TextView? = null
+    private val sessionRecs = ArrayList<JSONObject>()
     private var running = false
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
@@ -89,17 +93,24 @@ class MainActivity : Activity() {
         bigSpeed = TextView(this).apply { text = "—"; textSize = 30f; typeface = Typeface.DEFAULT_BOLD }.also { col.addView(it) }
         bar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply { max = 1000 }.also { col.addView(it) }
         barText = TextView(this).apply { text = "0%"; textSize = 12f }.also { col.addView(it) }
-        graph = SpeedGraph(this)
-        col.addView(graph, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(8) })
+        graphsBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        col.addView(graphsBox)
 
         val logBtns = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(8), 0, 0) }
-        logBtns.addView(Button(this).apply { text = "Очистить лог"; setOnClickListener { logView.text = "" } },
+        logBtns.addView(Button(this).apply { text = "Очистить лог"; setOnClickListener { logView.text = ""; graphsBox.removeAllViews(); sessionRecs.clear(); curGraph = null; curSub = null } },
             LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         logBtns.addView(Button(this).apply {
             text = "Копировать лог"
             setOnClickListener {
                 getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("UNTA", logView.text))
                 Toast.makeText(this@MainActivity, "Лог скопирован", Toast.LENGTH_SHORT).show()
+            }
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        logBtns.addView(Button(this).apply {
+            text = "Поделиться…"
+            setOnClickListener {
+                if (sessionRecs.isEmpty()) Toast.makeText(this@MainActivity, "Сначала сделай замер", Toast.LENGTH_SHORT).show()
+                else ShareBuilder.show(this@MainActivity, sessionRecs.toList())
             }
         }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         col.addView(logBtns)
@@ -248,11 +259,22 @@ class MainActivity : Activity() {
         return super.onOptionsItemSelected(item)
     }
 
+    /** Для каждого нового замера свой график ниже предыдущего, с заголовком: что за замер. */
+    private fun addGraphCard(title: String, secs: Int, phases: Int) {
+        val t = TextView(this).apply { text = title; textSize = 14f; typeface = Typeface.DEFAULT_BOLD; setPadding(0, dp(14), 0, 0) }
+        val sub = TextView(this).apply { text = "идёт замер..."; textSize = 12f; alpha = 0.75f }
+        val g = SpeedGraph(this).apply { reset(secs, phases) }
+        graphsBox.addView(t)
+        graphsBox.addView(sub)
+        graphsBox.addView(g, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(4) })
+        curGraph = g; curSub = sub
+    }
+
     private fun proxyCheck(specs: List<ProxySpec>) {
         val whenMs = System.currentTimeMillis()
         val base = Report.baseDir(this, Prefs.path(this))
         val info = NetInfo.collect(this)
-        ui.post { status.text = "Быстрая проверка прокси"; bigSpeed.text = "—"; graph.reset(10, 1) }
+        ui.post { status.text = "Быстрая проверка прокси"; bigSpeed.text = "—" }
         log("Сеть: ${Report.pointName(info)} (${info.optString("transport")})")
         log("Быстрая проверка ${specs.size} прокси (параллельно, без замера скорости)\n")
         setBar(0.0, "")
@@ -290,7 +312,7 @@ class MainActivity : Activity() {
             val whenMs = System.currentTimeMillis()
             val title = if (p == null) "Напрямую" else "Прокси " + p.label() + if (p.comment.isNotEmpty()) " (${p.comment})" else ""
             log("== [${i + 1}/$n] $title")
-            ui.post { graph.reset(sc, if (hasUl) 2 else 1); bigSpeed.text = "—" }
+            ui.post { addGraphCard("[${i + 1}/$n] $title → ${srv.label}", sc, if (hasUl) 2 else 1); bigSpeed.text = "—" }
             fun leg(ph: String, f: Double) = when (ph) {
                 "check" -> 0.03
                 "download" -> 0.05 + (if (hasUl) 0.45 else 0.95) * f
@@ -304,7 +326,7 @@ class MainActivity : Activity() {
                 },
                 sample = { ph, mbps, frac ->
                     ui.post {
-                        graph.add(ph, mbps, frac)
+                        curGraph?.add(ph, mbps, frac)
                         bigSpeed.text = (if (ph == "upload") "↑ " else "↓ ") + "%.1f Мбит/с".format(mbps)
                     }
                     setBar((i + leg(ph, frac)) / n, "(${i + 1} из $n)")
@@ -312,16 +334,20 @@ class MainActivity : Activity() {
             )
             val r = Engine.runLeg(title, p, srv, th, sc, ::log, pr)
             if (Engine.cancel.get()) { log("  остановлено, результат не сохранён"); break }
+            val ex = r.exit
+            val geoStr = if (ex != null && ex.optString("clientIp").isNotEmpty()) HistoryFmt.exitLine(ex) else ""
             if (!r.reachable) log("  ✗ ${r.error}")
             else {
-                val e = r.exit
-                if (e != null && e.optString("clientIp").isNotEmpty())
-                    log("  внешний IP: ${e.optString("clientIp")} ${listOf(e.optString("city"), e.optString("country")).filter { it.isNotEmpty() }.joinToString(", ")}")
+                if (geoStr.isNotEmpty()) log("  внешний IP и гео по IP: $geoStr")
                 ui.post { bigSpeed.text = "↓ ${f2(r.dlMbps)}   ↑ ${f2(r.ulMbps)}  Мбит/с" }
             }
+            val subTxt = (if (r.reachable) "↓ ${f2(r.dlMbps)}  ↑ ${f2(r.ulMbps)} Мбит/с, отклик ${r.pingMs} мс" else "✗ ${r.error}") +
+                (if (geoStr.isNotEmpty()) "\nIP: $geoStr" else "")
+            ui.post { curSub?.text = subTxt }
             setBar((i + 1.0) / n, "(${i + 1} из $n)")
             val (json, txt) = Report.build(this, info, listOf(r), srv, th, sc, false, whenMs)
             val files = Report.save(base, false, Report.fileName(whenMs, info, r, srv), json, txt)
+            ui.post { sessionRecs.add(json) }
             log("  файл: ${files[0].name}\n")
         }
         ui.post { status.text = if (Engine.cancel.get()) "Остановлено" else "Готово" }

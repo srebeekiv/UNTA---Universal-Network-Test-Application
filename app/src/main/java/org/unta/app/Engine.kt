@@ -56,7 +56,8 @@ data class LegResult(
     val title: String, val proxy: String?, val reachable: Boolean, val error: String?, val pingMs: Long?,
     val dlMbps: Double?, val ulMbps: Double?, val dlBytes: Long, val ulBytes: Long,
     val dlBad: Int, val ulBad: Int, val exit: JSONObject?,
-    val kind: String = "direct", val pname: String = "", val hostPort: String = "", val server: String = "", val latency: JSONObject? = null
+    val kind: String = "direct", val pname: String = "", val hostPort: String = "", val server: String = "", val latency: JSONObject? = null,
+    val graph: JSONObject? = null
 )
 
 object Engine {
@@ -380,8 +381,17 @@ object Engine {
         return r.copy(kind = kind, pname = p0?.comment ?: "", hostPort = p?.let { "${it.host}_${it.port}" } ?: "")
     }
 
-    private fun legInner(title: String, p0: ProxySpec?, s0: Server, threads: Int, secs: Int, log: (String) -> Unit, holder: Array<ProxySpec?>, pr: Progress?): LegResult {
-        pr?.phase?.invoke("check")
+    private fun legInner(title: String, p0: ProxySpec?, s0: Server, threads: Int, secs: Int, log: (String) -> Unit, holder: Array<ProxySpec?>, pr0: Progress?): LegResult {
+        // копим точки графика, чтобы сохранить их в файл (для истории и «поделиться»)
+        val dlPts = ArrayList<DoubleArray>(); val ulPts = ArrayList<DoubleArray>()
+        val pr = Progress(
+            phase = { ph -> pr0?.phase?.invoke(ph) },
+            sample = { ph, m, f ->
+                (if (ph == "upload") ulPts else dlPts).add(doubleArrayOf(f * secs, m))
+                pr0?.sample?.invoke(ph, m, f)
+            }
+        )
+        pr.phase("check")
         var s = s0
         var p = p0
         var client: OkHttpClient
@@ -418,6 +428,10 @@ object Engine {
         log("  скачивание: " + (dl.mbps?.let { "%.2f Мбит/с".format(it) } ?: "не удалось"))
         val ul = if (s.ul == null) null else { pr?.phase?.invoke("upload"); upload(client, s, threads, secs, pr) }
         if (s.ul == null) log("  отдача: сервер не поддерживает") else log("  отдача: " + (ul?.mbps?.let { "%.2f Мбит/с".format(it) } ?: "не удалось"))
-        return LegResult(title, p?.raw, true, null, ping, dl.mbps, ul?.mbps, dl.bytes, ul?.bytes ?: 0, dl.bad, ul?.bad ?: 0, exit, server = s.label, latency = lat)
+        fun arr(l: List<DoubleArray>) = org.json.JSONArray().also { a ->
+            l.forEach { a.put(org.json.JSONArray().put(Math.round(it[0] * 10) / 10.0).put(Math.round(it[1] * 10) / 10.0)) }
+        }
+        val graph = JSONObject().put("secs", secs).put("phases", if (s.ul != null) 2 else 1).put("dl", arr(dlPts)).put("ul", arr(ulPts))
+        return LegResult(title, p?.raw, true, null, ping, dl.mbps, ul?.mbps, dl.bytes, ul?.bytes ?: 0, dl.bad, ul?.bad ?: 0, exit, server = s.label, latency = lat, graph = graph)
     }
 }

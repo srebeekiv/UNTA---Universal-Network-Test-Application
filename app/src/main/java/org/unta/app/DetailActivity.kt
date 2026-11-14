@@ -1,12 +1,9 @@
 package org.unta.app
 
 import android.app.Activity
-import android.content.ActivityNotFoundException
 import android.content.ClipData
 import android.content.ClipboardManager
-import android.content.Intent
 import android.graphics.Typeface
-import android.net.Uri
 import android.os.Bundle
 import android.view.MenuItem
 import android.view.ViewGroup
@@ -32,24 +29,27 @@ class DetailActivity : Activity() {
         val text = HistoryFmt.detail(j) + "\nФайл: $path\n"
 
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), dp(12), dp(12), dp(12)) }
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        row.addView(Button(this).apply {
-            this.text = "Копировать"
-            setOnClickListener {
-                getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("UNTA", text))
-                Toast.makeText(this@DetailActivity, "Скопировано", Toast.LENGTH_SHORT).show()
-            }
-        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        fun row(vararg b: Button) {
+            val r = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            b.forEach { r.addView(it, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)) }
+            col.addView(r)
+        }
+        fun btn(t: String, f: () -> Unit) = Button(this).apply { this.text = t; setOnClickListener { f() } }
+
+        val copy = btn("Копировать") {
+            getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("UNTA", text))
+            Toast.makeText(this, "Скопировано", Toast.LENGTH_SHORT).show()
+        }
+        val share = btn("Поделиться…") { ShareBuilder.show(this, listOf(j)) }
+        row(copy, share)
+
         val loc = j.optJSONObject("network")?.optJSONObject("location")
-        if (loc != null) row.addView(Button(this).apply {
-            this.text = "Открыть на карте"
-            setOnClickListener {
-                val lat = loc.optDouble("lat"); val lon = loc.optDouble("lon")
-                try { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("geo:$lat,$lon?q=$lat,$lon(UNTA)"))) }
-                catch (e: ActivityNotFoundException) { Toast.makeText(this@DetailActivity, "Нет приложения для карт", Toast.LENGTH_LONG).show() }
-            }
-        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        col.addView(row)
+        val exit = HistoryFmt.exitLatLon(j.optJSONArray("legs")?.optJSONObject(0)?.optJSONObject("exit"))
+        val maps = ArrayList<Button>()
+        if (loc != null) maps.add(btn("Карта: устройство") { MapLinks.choose(this, loc.optDouble("lat"), loc.optDouble("lon"), "устройство") })
+        if (exit != null) maps.add(btn("Карта: IP / прокси") { MapLinks.choose(this, exit.first, exit.second, "выходной IP (приблизительно)") })
+        if (maps.isNotEmpty()) row(*maps.toTypedArray())
+
         col.addView(TextView(this).apply {
             this.text = text; textSize = 13f; typeface = Typeface.MONOSPACE; setTextIsSelectable(true); setPadding(0, dp(8), 0, 0)
         })

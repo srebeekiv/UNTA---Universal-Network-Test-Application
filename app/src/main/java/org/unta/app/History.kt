@@ -75,6 +75,38 @@ object HistoryFmt {
         }
     }
 
+    fun exitLatLon(e: JSONObject?): Pair<Double, Double>? {
+        if (e == null) return null
+        val la = e.optString("latitude").toDoubleOrNull(); val lo = e.optString("longitude").toDoubleOrNull()
+        return if (la != null && lo != null) la to lo else null
+    }
+
+    /** «IP  город, страна, провайдер  (широта, долгота)»; координаты по базе IP приблизительные. */
+    fun exitLine(e: JSONObject): String {
+        val place = listOf(e.optString("city"), e.optString("country"), e.optString("asOrganization")).filter { it.isNotEmpty() }.joinToString(", ")
+        val ll = exitLatLon(e)?.let { "  (%.4f, %.4f)".format(Locale.US, it.first, it.second) } ?: ""
+        return e.optString("clientIp") + (if (place.isNotEmpty()) "  $place" else "") + ll
+    }
+
+    fun resultLine(leg: JSONObject): String =
+        if (!leg.optBoolean("reachable", true)) "ошибка: ${leg.optString("error")}"
+        else "↓ ${n(leg, "download_mbps")}  ↑ ${n(leg, "upload_mbps")} Мбит/с, отклик ${leg.optLong("ping_ms")} мс"
+
+    fun geoText(j: JSONObject, net: JSONObject): String {
+        val t = StringBuilder("\nГЕО\n")
+        val loc = net.optJSONObject("location")
+        t.append("  устройство (где находился телефон): ")
+        if (loc != null) t.append("${loc.optDouble("lat")}, ${loc.optDouble("lon")} (точность ${loc.optDouble("accuracy_m").toInt()} м)\n")
+        else t.append("не определено (нет разрешения на геолокацию или нет сохранённой позиции)\n")
+        val leg = j.optJSONArray("legs")?.optJSONObject(0)
+        val e = leg?.optJSONObject("exit")
+        if (e != null && e.optString("clientIp").isNotEmpty()) {
+            val direct = (leg.optString("kind").ifEmpty { "direct" }) == "direct"
+            t.append("  ${if (direct) "ваше подключение по выходному IP (приблизительно, по базе IP)" else "прокси по выходному IP (приблизительно, по базе IP)"}: ${exitLine(e)}\n")
+        }
+        return t.toString()
+    }
+
     private fun n(j: JSONObject, k: String) = if (j.isNull(k) || !j.has(k)) "—" else "%.2f".format(j.optDouble(k))
 
     fun detail(j: JSONObject): String {
@@ -100,8 +132,7 @@ object HistoryFmt {
             t.append("  сервер: ${j.optJSONObject("server")?.optString("label") ?: "—"}\n")
             t.append("  путь: ${leg?.optString("title") ?: "—"}\n")
             val e = leg?.optJSONObject("exit")
-            if (e != null && e.optString("clientIp").isNotEmpty())
-                t.append("  внешний IP: ${e.optString("clientIp")}  ${listOf(e.optString("city"), e.optString("country"), e.optString("asOrganization")).filter { it.isNotEmpty() }.joinToString(", ")}\n")
+            if (e != null && e.optString("clientIp").isNotEmpty()) t.append("  внешний IP: ${exitLine(e)}\n")
             if (leg != null) {
                 t.append("\nРЕЗУЛЬТАТ\n")
                 if (!leg.optBoolean("reachable", true)) t.append("  НЕ УДАЛОСЬ: ${leg.optString("error")}\n")
@@ -115,6 +146,7 @@ object HistoryFmt {
             }
             t.append("\nПАРАМЕТРЫ\n  потоков: ${j.optInt("threads")}, секунд на этап: ${j.optInt("seconds_per_phase")}\n")
         }
+        t.append(geoText(j, net))
         t.append("\nСЕТЬ И СИГНАЛ\n").append(Report.networkText(net))
         return t.toString()
     }

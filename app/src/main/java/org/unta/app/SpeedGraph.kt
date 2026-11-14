@@ -15,18 +15,37 @@ class SpeedGraph(ctx: Context) : View(ctx) {
     private var phaseSecs = 10f
     private var phases = 2
     private val d = resources.displayMetrics.density
-    private val textColor: Int = run {
+    private val themeText: Int = run {
         val ta = ctx.obtainStyledAttributes(intArrayOf(android.R.attr.textColorSecondary))
         val c = ta.getColor(0, Color.GRAY); ta.recycle(); c
     }
     private val line = { col: Int -> Paint(Paint.ANTI_ALIAS_FLAG).apply { color = col; style = Paint.Style.STROKE; strokeWidth = 2.5f * d; strokeJoin = Paint.Join.ROUND } }
     private val pDl = line(0xFF1E88E5.toInt())
     private val pUl = line(0xFFFB8C00.toInt())
-    private val grid = Paint().apply { color = (textColor and 0x00FFFFFF) or 0x44000000; strokeWidth = 1f }
-    private val txt = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = textColor; textSize = 11f * d }
-    private val bg = Paint().apply { color = (textColor and 0x00FFFFFF) or 0x14000000 }
+    private val grid = Paint()
+    private val txt = Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 11f * d }
+    private val bg = Paint()
+
+    init { colors(themeText) }
+
+    private fun colors(tc: Int) {
+        grid.color = (tc and 0x00FFFFFF) or 0x44000000; grid.strokeWidth = 1f
+        txt.color = tc
+        bg.color = (tc and 0x00FFFFFF) or 0x14000000
+    }
+
+    /** Светлый вид для картинки «поделиться»: тёмный текст на светлом фоне независимо от темы телефона. */
+    fun useExportLook() { colors(0xFF333333.toInt()); bg.color = 0xFFF2F4F8.toInt() }
 
     fun reset(secs: Int, phaseCount: Int) { dl.clear(); ul.clear(); phaseSecs = secs.toFloat(); phases = phaseCount; invalidate() }
+
+    /** Готовые точки (x в секундах внутри этапа) - для истории и картинки. */
+    fun setData(secs: Int, phaseCount: Int, dlPts: List<FloatArray>, ulPts: List<FloatArray>) {
+        phaseSecs = secs.toFloat(); phases = phaseCount
+        dl.clear(); dl.addAll(dlPts)
+        ul.clear(); ul.addAll(ulPts.map { floatArrayOf(it[0] + phaseSecs, it[1]) })
+        invalidate()
+    }
 
     fun add(phase: String, mbps: Double, frac: Double) {
         val up = phase == "upload"
